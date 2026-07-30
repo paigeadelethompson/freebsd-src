@@ -36,6 +36,7 @@
 #include <net/if.h>
 #include <net/route.h>
 
+#include <libxo/xo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,13 +53,13 @@ fib_status(if_ctx *ctx)
 	strlcpy(ifr.ifr_name, ctx->ifname, sizeof(ifr.ifr_name));
 	if (ioctl_ctx(ctx, SIOCGIFFIB, (caddr_t)&ifr) == 0 &&
 	    ifr.ifr_fib != RT_DEFAULT_FIB)
-		printf("\tfib: %u\n", ifr.ifr_fib);
+		xo_emit("\tfib: {:fib-id/%u}\n", ifr.ifr_fib);
 
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, ctx->ifname, sizeof(ifr.ifr_name));
 	if (ioctl_ctx(ctx, SIOCGTUNFIB, (caddr_t)&ifr) == 0 &&
 	    ifr.ifr_fib != RT_DEFAULT_FIB)
-		printf("\ttunnelfib: %u\n", ifr.ifr_fib);
+		xo_emit("\ttunnelfib: {:tunnelfib-id/%u}\n", ifr.ifr_fib);
 }
 
 static void
@@ -69,12 +70,14 @@ setiffib(if_ctx *ctx, const char *val, int dummy __unused)
 	char *ep;
 
 	fib = strtoul(val, &ep, 0);
-	if (*ep != '\0' || fib > UINT_MAX)
-		errx(1, "fib %s not valid", val);
+	if (*ep != '\0' || fib > UINT_MAX) {
+		xo_warn("fib %s not valid", val);
+		return;
+	}
 
 	ifr.ifr_fib = fib;
 	if (ioctl_ctx_ifr(ctx, SIOCSIFFIB, &ifr) < 0)
-		err(1, "ioctl (SIOCSIFFIB)");
+		xo_warn("ioctl (SIOCSIFFIB)");
 }
 
 static void
@@ -85,12 +88,14 @@ settunfib(if_ctx *ctx, const char *val, int dummy __unused)
 	char *ep;
 
 	fib = strtoul(val, &ep, 0);
-	if (*ep != '\0' || fib > UINT_MAX)
-		errx(1, "fib %s not valid", val);
+	if (*ep != '\0' || fib > UINT_MAX) {
+		xo_warn("fib %s not valid", val);
+		return;
+	}
 
 	ifr.ifr_fib = fib;
 	if (ioctl_ctx_ifr(ctx, SIOCSTUNFIB, &ifr) < 0)
-		err(1, "ioctl (SIOCSTUNFIB)");
+		xo_warn("ioctl (SIOCSTUNFIB)");
 }
 
 static struct cmd fib_cmds[] = {

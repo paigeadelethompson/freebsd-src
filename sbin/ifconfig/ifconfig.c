@@ -69,9 +69,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <libxo/xo.h>
+
 #include <libifconfig.h>
 
 #include "ifconfig.h"
+
+#define	IFCONFIG_XO_VERSION	"1"
 
 ifconfig_handle_t *lifh;
 
@@ -99,6 +103,7 @@ static	void status(if_ctx *ctx, const struct sockaddr_dl *sdl,
 #endif
 static _Noreturn void usage(void);
 static void Perrorc(const char *cmd, int error);
+static void xo_cleanup(void);
 
 static int getifflags(const char *ifname, int us, bool err_ok);
 
@@ -173,7 +178,7 @@ usage(void)
 #else
 #define	JFLAG " "
 #endif
-	fprintf(stderr,
+	xo_errx(1,
 	"usage: ifconfig" JFLAG "[-f type:format] %sinterface address_family\n"
 	"                [address [dest_address]] [parameters]\n"
 	"       ifconfig" JFLAG "interface create\n"
@@ -181,7 +186,6 @@ usage(void)
 	"       ifconfig" JFLAG "-l [-d] [-u] [address_family]\n"
 	"       ifconfig" JFLAG "%s[-d] [-m] [-u] [-v]\n",
 		options, options, options);
-	exit(1);
 #undef	JFLAG
 }
 
@@ -217,9 +221,9 @@ ifcreate_ioctl(if_ctx *ctx, struct ifreq *ifr)
 	if (ioctl(ctx->io_s, SIOCIFCREATE2, ifr) < 0) {
 		switch (errno) {
 		case EEXIST:
-			errx(1, "interface %s already exists", ifr->ifr_name);
+			xo_errx(1, "interface %s already exists", ifr->ifr_name);
 		default:
-			err(1, "SIOCIFCREATE2 (%s)", ifr->ifr_name);
+			xo_err(1, "SIOCIFCREATE2 (%s)", ifr->ifr_name);
 		}
 	}
 
@@ -341,7 +345,7 @@ static void setformat(char *input)
 				free(f_inet6);
 				f_inet6 = strdup(category);
 			} else {
-				warnx("Skipping invalid format: %s\n",
+				xo_warnx("Skipping invalid format: %s\n",
 				    category);
 			}
 			continue;
@@ -429,7 +433,13 @@ static void
 printifnamemaybe(void)
 {
 	if (ifname_to_print[0] != '\0')
-		printf("%s\n", ifname_to_print);
+		xo_emit("{:ifname-print/%s}\n", ifname_to_print);
+}
+
+static void
+xo_cleanup(void)
+{
+	xo_finish();
 }
 
 static void
@@ -573,7 +583,7 @@ args_parse(struct ifconfig_args *args, int argc, char *argv[])
 			const struct afswtch *afp = af_getbyname(*argv);
 
 			if (afp == NULL) {
-				warnx("Address family '%s' unknown.", *argv);
+				xo_warnx("Address family '%s' unknown.", *argv);
 				usage();
 			}
 			if (afp->af_name != NULL)
@@ -632,9 +642,15 @@ main(int ac, char *av[])
 		.io_s = -1,
 	};
 
+	ac = xo_parse_args(ac, av);
+	if (ac < 0)
+		exit(EXIT_FAILURE);
+
+	xo_set_version(IFCONFIG_XO_VERSION);
+
 	lifh = ifconfig_open();
 	if (lifh == NULL)
-		err(EXIT_FAILURE, "ifconfig_open");
+		xo_err(EXIT_FAILURE, "ifconfig_open");
 
 	envformat = getenv("IFCONFIG_FORMAT");
 	if (envformat != NULL)
@@ -645,8 +661,11 @@ main(int ac, char *av[])
 	 * even if we terminate early due to error.
 	 */
 	atexit(printifnamemaybe);
+	atexit(xo_cleanup);
 
 	args_parse(args, ac, av);
+
+	xo_open_container("ifconfig");
 
 	if (!args->all && !args->namesonly) {
 		/* not listing, need an argument */
@@ -665,7 +684,7 @@ main(int ac, char *av[])
 			 */
 			if (isargcreate(arg)) {
 				if (isnametoolong(args->ifname))
-					errx(1, "%s: cloning name too long",
+					xo_errx(1, "%s: cloning name too long",
 					    args->ifname);
 				ifconfig(&ctx, 1, NULL);
 				exit(exit_code);
@@ -678,13 +697,13 @@ main(int ac, char *av[])
 			 */
 			if (arg != NULL && (strcmp(arg, "-vnet") == 0)) {
 				if (isnametoolong(args->ifname))
-					errx(1, "%s: interface name too long",
+					xo_errx(1, "%s: interface name too long",
 					    args->ifname);
 				ifconfig(&ctx, 0, NULL);
 				exit(exit_code);
 			}
 #endif
-			errx(1, "interface %s does not exist", args->ifname);
+			xo_errx(1, "interface %s does not exist", args->ifname);
 		} else {
 			/*
 			 * Do not allow use `create` command as hostname if
@@ -692,7 +711,7 @@ main(int ac, char *av[])
 			 */
 			if (isargcreate(arg)) {
 				if (args->argc == 1)
-					errx(1, "interface %s already exists",
+					xo_errx(1, "interface %s already exists",
 					    args->ifname);
 				args_pop(args);
 			}
@@ -713,7 +732,7 @@ main(int ac, char *av[])
 	 */
 	if ((args->argc > 0) && (args->ifname != NULL)) {
 		if (isnametoolong(args->ifname))
-			warnx("%s: interface name too long, skipping", args->ifname);
+			xo_warnx("%s: interface name too long, skipping", args->ifname);
 		else {
 			flags = getifflags(args->ifname, -1, false);
 			if (!(((flags & IFF_CANTCONFIG) != 0) ||
@@ -729,6 +748,7 @@ main(int ac, char *av[])
 	list_interfaces(&ctx);
 
 done:
+	xo_close_container("ifconfig");
 	freeformat();
 	ifconfig_close(lifh);
 	exit(exit_code);
@@ -786,12 +806,12 @@ list_interfaces_ioctl(if_ctx *ctx)
 	struct ifconfig_args *args = ctx->args;
 
 	if (getifaddrs(&ifap) != 0)
-		err(EXIT_FAILURE, "getifaddrs");
+		xo_err(EXIT_FAILURE, "getifaddrs");
 
 	char *cp = NULL;
 	
 	if (calcorders(ifap, &q) != 0)
-		err(EXIT_FAILURE, "calcorders");
+		xo_err(EXIT_FAILURE, "calcorders");
 		
 	sifap = sortifaddrs(ifap, cmpifaddrs, &q);
 
@@ -799,6 +819,7 @@ list_interfaces_ioctl(if_ctx *ctx)
 		free(cur);
 
 	ifindex = 0;
+	xo_open_list("interface");
 	for (ifa = sifap; ifa; ifa = ifa->ifa_next) {
 		struct ifreq paifr = {};
 		const struct sockaddr_dl *sdl;
@@ -818,7 +839,7 @@ list_interfaces_ioctl(if_ctx *ctx)
 		if (cp != NULL && strcmp(cp, ifa->ifa_name) == 0 && !args->namesonly)
 			continue;
 		if (isnametoolong(ifa->ifa_name)) {
-			warnx("%s: interface name too long, skipping",
+			xo_warnx("%s: interface name too long, skipping",
 			    ifa->ifa_name);
 			continue;
 		}
@@ -839,9 +860,11 @@ list_interfaces_ioctl(if_ctx *ctx)
 				continue;
 			namecp = cp;
 			ifindex++;
+			xo_open_instance("interface");
 			if (ifindex > 1)
-				printf(" ");
-			fputs(cp, stdout);
+				xo_emit("{P: }");
+			xo_emit("{:ifname/%s}", cp);
+			xo_close_instance("interface");
 			continue;
 		}
 		ifindex++;
@@ -851,8 +874,9 @@ list_interfaces_ioctl(if_ctx *ctx)
 		else
 			status(ctx, sdl, ifa);
 	}
+	xo_close_list("interface");
 	if (args->namesonly)
-		printf("\n");
+		xo_emit("\n");
 	freeifaddrs(ifap);
 }
 #endif
@@ -885,7 +909,7 @@ group_member(const char *ifname, const char *match, const char *nomatch)
 	if (sock == -1) {
 		sock = socket(AF_LOCAL, SOCK_DGRAM, 0);
     		if (sock == -1)
-            	    errx(1, "%s: socket(AF_LOCAL,SOCK_DGRAM)", __func__);
+            	    xo_errx(1, "%s: socket(AF_LOCAL,SOCK_DGRAM)", __func__);
 	}
 
 	/* Determine amount of memory for the list of groups. */
@@ -893,7 +917,7 @@ group_member(const char *ifname, const char *match, const char *nomatch)
 		if (errno == EINVAL || errno == ENOTTY)
 			return (false);
 		else
-			errx(1, "%s: SIOCGIFGROUP", __func__);
+			xo_errx(1, "%s: SIOCGIFGROUP", __func__);
 	}
 
 	/* Obtain the list of groups. */
@@ -902,9 +926,9 @@ group_member(const char *ifname, const char *match, const char *nomatch)
 	    (struct ifg_req *)calloc(len / sizeof(*ifg), sizeof(*ifg));
 
 	if (ifgr.ifgr_groups == NULL)
-		errx(1, "%s: no memory", __func__);
+		xo_errx(1, "%s: no memory", __func__);
 	if (ioctl(sock, SIOCGIFGROUP, (caddr_t)&ifgr) == -1)
-		errx(1, "%s: SIOCGIFGROUP", __func__);
+		xo_errx(1, "%s: SIOCGIFGROUP", __func__);
 
 	/* Perform matching. */
 	matched = false;
@@ -1031,7 +1055,7 @@ callback_register(callback_func *func, void *arg)
 
 	cb = malloc(sizeof(struct callback));
 	if (cb == NULL)
-		errx(1, "unable to allocate memory for callback");
+		xo_errx(1, "unable to allocate memory for callback");
 	cb->cb_func = func;
 	cb->cb_arg = arg;
 	cb->cb_next = callbacks;
@@ -1063,7 +1087,7 @@ delifaddr(if_ctx *ctx, const struct afswtch *afp)
 	int error;
 
 	if (afp->af_exec == NULL) {
-		warnx("interface %s cannot change %s addresses!",
+		xo_warnx("interface %s cannot change %s addresses!",
 		    ctx->ifname, afp->af_name);
 		clearaddr = 0;
 		return;
@@ -1082,7 +1106,7 @@ static void
 addifaddr(if_ctx *ctx, const struct afswtch *afp)
 {
 	if (afp->af_exec == NULL) {
-		warnx("interface %s cannot change %s addresses!",
+		xo_warnx("interface %s cannot change %s addresses!",
 		      ctx->ifname, afp->af_name);
 		newaddr = 0;
 		return;
@@ -1134,7 +1158,7 @@ ifconfig_ioctl(if_ctx *orig_ctx, int iscreate, const struct afswtch *uafp)
 	if (afp == NULL)
 		afp = af_getbyname("link");
 	if (afp == NULL) {
-		warnx("Please specify an address_family.");
+		xo_warnx("Please specify an address_family.");
 		usage();
 	}
 
@@ -1146,7 +1170,7 @@ top:
 	if ((s = socket(ifr.ifr_addr.sa_family, SOCK_DGRAM, 0)) < 0 &&
 	    (uafp != NULL || errno != EAFNOSUPPORT ||
 	     (s = socket(AF_LOCAL, SOCK_DGRAM, 0)) < 0))
-		err(1, "socket(family %u,SOCK_DGRAM)", ifr.ifr_addr.sa_family);
+		xo_err(1, "socket(family %u,SOCK_DGRAM)", ifr.ifr_addr.sa_family);
 
 	ctx->io_s = s;
 	ctx->afp = afp;
@@ -1161,7 +1185,7 @@ top:
 			 */
 			cb = callbacks;
 			if (cb == NULL)
-				errx(1, "internal error, no callback");
+				xo_errx(1, "internal error, no callback");
 			callbacks = cb->cb_next;
 			cb->cb_func(ctx, cb->cb_arg);
 			iscreate = 0;
@@ -1193,7 +1217,7 @@ top:
 		}
 		if (p->c_parameter == NEXTARG && p->c_u.c_func) {
 			if (argv[1] == NULL)
-				errx(1, "'%s' requires argument",
+				xo_errx(1, "'%s' requires argument",
 				    p->c_name);
 			p->c_u.c_func(ctx, argv[1], 0);
 			argc--, argv++;
@@ -1203,7 +1227,7 @@ top:
 				argc--, argv++;
 		} else if (p->c_parameter == NEXTARG2 && p->c_u.c_func2) {
 			if (argc < 3)
-				errx(1, "'%s' requires 2 arguments",
+				xo_errx(1, "'%s' requires 2 arguments",
 				    p->c_name);
 			p->c_u.c_func2(ctx, argv[1], argv[2]);
 			argc -= 2, argv += 2;
@@ -1270,21 +1294,21 @@ settunnel(if_ctx *ctx, const char *src, const char *dst)
 	int ecode;
 
 	if (afp->af_settunnel == NULL) {
-		warn("address family %s does not support tunnel setup",
+		xo_warn("address family %s does not support tunnel setup",
 			afp->af_name);
 		return;
 	}
 
 	if ((ecode = getaddrinfo(src, NULL, NULL, &srcres)) != 0)
-		errx(1, "error in parsing address string: %s",
+		xo_errx(1, "error in parsing address string: %s",
 		    gai_strerror(ecode));
 
 	if ((ecode = getaddrinfo(dst, NULL, NULL, &dstres)) != 0)
-		errx(1, "error in parsing address string: %s",
+		xo_errx(1, "error in parsing address string: %s",
 		    gai_strerror(ecode));
 
 	if (srcres->ai_addr->sa_family != dstres->ai_addr->sa_family)
-		errx(1,
+		xo_errx(1,
 		    "source and destination address families do not match");
 
 	afp->af_settunnel(ctx, srcres, dstres);
@@ -1299,7 +1323,7 @@ deletetunnel(if_ctx *ctx, const char *vname __unused, int param __unused)
 	struct ifreq ifr = {};
 
 	if (ioctl_ctx_ifr(ctx, SIOCDIFPHYADDR, &ifr) < 0)
-		err(1, "SIOCDIFPHYADDR");
+		xo_err(1, "SIOCDIFPHYADDR");
 }
 
 #ifdef JAIL
@@ -1310,9 +1334,9 @@ setifvnet(if_ctx *ctx, const char *jname, int dummy __unused)
 
 	ifr.ifr_jid = jail_getid(jname);
 	if (ifr.ifr_jid < 0)
-		errx(1, "%s", jail_errmsg);
+		xo_errx(1, "%s", jail_errmsg);
 	if (ioctl_ctx_ifr(ctx, SIOCSIFVNET, &ifr) < 0)
-		err(1, "SIOCSIFVNET");
+		xo_err(1, "SIOCSIFVNET");
 }
 
 static void
@@ -1322,9 +1346,9 @@ setifrvnet(if_ctx *ctx, const char *jname, int dummy __unused)
 
 	ifr.ifr_jid = jail_getid(jname);
 	if (ifr.ifr_jid < 0)
-		errx(1, "%s", jail_errmsg);
+		xo_errx(1, "%s", jail_errmsg);
 	if (ioctl_ctx_ifr(ctx, SIOCSIFRVNET, &ifr) < 0)
-		err(1, "SIOCSIFRVNET(%d, %s)", ifr.ifr_jid, ifr.ifr_name);
+		xo_err(1, "SIOCSIFRVNET(%d, %s)", ifr.ifr_jid, ifr.ifr_name);
 }
 #endif
 
@@ -1384,7 +1408,7 @@ getifflags(const char *ifname, int us, bool err_ok)
 	(void) strlcpy(my_ifr.ifr_name, ifname, sizeof(my_ifr.ifr_name));
 	if (us < 0) {
 		if ((s = socket(AF_LOCAL, SOCK_DGRAM, 0)) < 0)
-			err(1, "socket(family AF_LOCAL,SOCK_DGRAM");
+			xo_err(1, "socket(family AF_LOCAL,SOCK_DGRAM");
 	} else
 		s = us;
  	if (ioctl(s, SIOCGIFFLAGS, (caddr_t)&my_ifr) < 0) {
@@ -1490,7 +1514,7 @@ setifcapnv(if_ctx *ctx, const char *vname, const char *arg)
 	if (ioctl_ctx_ifr(ctx, SIOCGIFCAP, &ifr) < 0)
 		Perror("ioctl (SIOCGIFCAP)");
 	if ((ifr.ifr_curcap & IFCAP_NV) == 0) {
-		warnx("IFCAP_NV not supported");
+		xo_warnx("IFCAP_NV not supported");
 		return; /* Not exit() */
 	}
 
@@ -1513,7 +1537,7 @@ setifcapnv(if_ctx *ctx, const char *vname, const char *arg)
 	}
 	buf = nvlist_pack(nvcap, &nvbuflen);
 	if (buf == NULL) {
-		errx(1, "nvlist_pack error");
+		xo_errx(1, "nvlist_pack error");
 		exit(1);
 	}
 	ifr.ifr_cap_nv.buf_length = ifr.ifr_cap_nv.length = nvbuflen;
@@ -1532,7 +1556,7 @@ setifmetric(if_ctx *ctx, const char *val, int dummy __unused)
 
 	ifr.ifr_metric = atoi(val);
 	if (ioctl_ctx_ifr(ctx, SIOCSIFMETRIC, &ifr) < 0)
-		err(1, "ioctl SIOCSIFMETRIC (set metric)");
+		xo_err(1, "ioctl SIOCSIFMETRIC (set metric)");
 }
 
 static void
@@ -1542,7 +1566,7 @@ setifmtu(if_ctx *ctx, const char *val, int dummy __unused)
 
 	ifr.ifr_mtu = atoi(val);
 	if (ioctl_ctx_ifr(ctx, SIOCSIFMTU, &ifr) < 0)
-		err(1, "ioctl SIOCSIFMTU (set mtu)");
+		xo_err(1, "ioctl SIOCSIFMTU (set mtu)");
 }
 
 static void
@@ -1554,12 +1578,12 @@ setifpcp(if_ctx *ctx, const char *val, int arg __unused)
 
 	ul = strtoul(val, &endp, 0);
 	if (*endp != '\0')
-		errx(1, "invalid value for pcp");
+		xo_errx(1, "invalid value for pcp");
 	if (ul > 7)
-		errx(1, "value for pcp out of range");
+		xo_errx(1, "value for pcp out of range");
 	ifr.ifr_lan_pcp = ul;
 	if (ioctl_ctx_ifr(ctx, SIOCSLANPCP, &ifr) == -1)
-		err(1, "SIOCSLANPCP");
+		xo_err(1, "SIOCSLANPCP");
 }
 
 static void
@@ -1569,7 +1593,7 @@ disableifpcp(if_ctx *ctx, const char *val __unused, int arg __unused)
 
 	ifr.ifr_lan_pcp = IFNET_PCP_NONE;
 	if (ioctl_ctx_ifr(ctx, SIOCSLANPCP, &ifr) == -1)
-		err(1, "SIOCSLANPCP");
+		xo_err(1, "SIOCSLANPCP");
 }
 
 static void
@@ -1581,11 +1605,11 @@ setifname(if_ctx *ctx, const char *val, int dummy __unused)
 	ifr_set_name(&ifr, ctx->ifname);
 	newname = strdup(val);
 	if (newname == NULL)
-		err(1, "no memory to set ifname");
+		xo_err(1, "no memory to set ifname");
 	ifr.ifr_data = newname;
 	if (ioctl_ctx(ctx, SIOCSIFNAME, (caddr_t)&ifr) < 0) {
 		free(newname);
-		err(1, "ioctl SIOCSIFNAME (set name)");
+		xo_err(1, "ioctl SIOCSIFNAME (set name)");
 	}
 	ifname_update(ctx, newname);
 	free(newname);
@@ -1605,13 +1629,13 @@ setifdescr(if_ctx *ctx, const char *val, int dummy __unused)
 		newdescr = strdup(val);
 		ifr.ifr_buffer.buffer = newdescr;
 		if (newdescr == NULL) {
-			warn("no memory to set ifdescr");
+			xo_warn("no memory to set ifdescr");
 			return;
 		}
 	}
 
 	if (ioctl_ctx_ifr(ctx, SIOCSIFDESCR, &ifr) < 0)
-		err(1, "ioctl SIOCSIFDESCR (set descr)");
+		xo_err(1, "ioctl SIOCSIFDESCR (set descr)");
 
 	free(newdescr);
 }
@@ -1701,36 +1725,43 @@ print_ifcap_nv(if_ctx *ctx)
 	    ifr.ifr_cap_nv.length, 0);
 	if (nvcap == NULL)
 		Perror("nvlist_unpack");
-	printf("\toptions");
+	xo_emit("\toptions");
 	cookie = NULL;
+	xo_open_list("options");
 	for (first = true;; first = false) {
 		nvname = nvlist_next(nvcap, &type, &cookie);
 		if (nvname == NULL) {
-			printf("\n");
+			xo_emit("\n");
 			break;
 		}
 		if (type == NV_TYPE_BOOL) {
 			val = nvlist_get_bool(nvcap, nvname);
 			if (val) {
-				printf("%c%s",
+				xo_emit("{P:/%c%s}",
 				    first ? ' ' : ',', nvname);
+				xo_emit("{le:options/%s}", nvname);
 			}
 		}
 	}
+	xo_close_list("options");
 	if (ctx->args->supmedia) {
-		printf("\tcapabilities");
+		xo_emit("\tcapabilities");
 		cookie = NULL;
+		xo_open_list("capabilities");
 		for (first = true;; first = false) {
 			nvname = nvlist_next(nvcap, &type,
 			    &cookie);
 			if (nvname == NULL) {
-				printf("\n");
+		xo_emit("\n");
 				break;
 			}
-			if (type == NV_TYPE_BOOL)
-				printf("%c%s", first ? ' ' :
+			if (type == NV_TYPE_BOOL) {
+				xo_emit("{P:/%c%s}", first ? ' ' :
 				    ',', nvname);
+				xo_emit("{le:capabilities/%s}", nvname);
+			}
 		}
+		xo_close_list("capabilities");
 	}
 	nvlist_destroy(nvcap);
 	free(buf);
@@ -1750,26 +1781,33 @@ print_ifcap(if_ctx *ctx)
 	if ((ifr.ifr_curcap & IFCAP_NV) != 0)
 		print_ifcap_nv(ctx);
 	else {
-		printf("\toptions=%x", ifr.ifr_curcap);
+		xo_emit("\toptions={:options-hex/%x}", ifr.ifr_curcap);
 		print_bits("options", &ifr.ifr_curcap, 1, IFCAPBITS, nitems(IFCAPBITS));
-		putchar('\n');
+		xo_emit("\n");
 		if (ctx->args->supmedia && ifr.ifr_reqcap != 0) {
-			printf("\tcapabilities=%x", ifr.ifr_reqcap);
+			xo_emit("\tcapabilities={:capab-hex/%x}", ifr.ifr_reqcap);
 			print_bits("capabilities", &ifr.ifr_reqcap, 1, IFCAPBITS, nitems(IFCAPBITS));
-			putchar('\n');
+			xo_emit("\n");
 		}
 	}
 }
 #endif
 
 void
-print_ifstatus(if_ctx *ctx)
+	print_ifstatus(if_ctx *ctx)
 {
 	struct ifstat ifs;
 
 	strlcpy(ifs.ifs_name, ctx->ifname, sizeof ifs.ifs_name);
-	if (ioctl_ctx(ctx, SIOCGIFSTATUS, &ifs) == 0)
-		printf("%s", ifs.ascii);
+	if (ioctl_ctx(ctx, SIOCGIFSTATUS, &ifs) == 0) {
+		char *p = ifs.ascii;
+		while (*p == '\t' || *p == ' ' || *p == '\n')
+			p++;
+		size_t len = strlen(p);
+		while (len > 0 && (p[len - 1] == '\n' || p[len - 1] == '\t' || p[len - 1] == ' '))
+			p[--len] = '\0';
+		xo_emit("{P:\t}{:if-status/%s}\n", p);
+	}
 }
 
 void
@@ -1778,7 +1816,7 @@ print_metric(if_ctx *ctx)
 	struct ifreq ifr = {};
 
 	if (ioctl_ctx_ifr(ctx, SIOCGIFMETRIC, &ifr) != -1)
-		printf(" metric %d", ifr.ifr_metric);
+		xo_emit(" metric {:metric/%d}", ifr.ifr_metric);
 }
 
 #ifdef WITHOUT_NETLINK
@@ -1788,7 +1826,7 @@ print_mtu(if_ctx *ctx)
 	struct ifreq ifr = {};
 
 	if (ioctl_ctx_ifr(ctx, SIOCGIFMTU, &ifr) != -1)
-		printf(" mtu %d", ifr.ifr_mtu);
+		xo_emit(" mtu {:mtu/%d}", ifr.ifr_mtu);
 }
 
 static void
@@ -1803,16 +1841,16 @@ print_description(if_ctx *ctx)
 			ifr.ifr_buffer.length = descrlen;
 			if (ioctl_ctx(ctx, SIOCGIFDESCR, &ifr) == 0) {
 				if (ifr.ifr_buffer.buffer == descr) {
-					if (strlen(descr) > 0)
-						printf("\tdescription: %s\n",
-						    descr);
+				if (strlen(descr) > 0)
+					xo_emit("\tdescription: {:descr/%s}\n",
+					    descr);
 				} else if (ifr.ifr_buffer.length > descrlen) {
 					descrlen = ifr.ifr_buffer.length;
 					continue;
 				}
 			}
 		} else
-			warn("unable to allocate memory for interface"
+			xo_warn("unable to allocate memory for interface"
 			    "description");
 		break;
 	}
@@ -1839,15 +1877,16 @@ status(if_ctx *ctx, const struct sockaddr_dl *sdl __unused, struct ifaddrs *ifa)
 
 	s = socket(ifr.ifr_addr.sa_family, SOCK_DGRAM, 0);
 	if (s < 0)
-		err(1, "socket(family %u,SOCK_DGRAM)", ifr.ifr_addr.sa_family);
+		xo_err(1, "socket(family %u,SOCK_DGRAM)", ifr.ifr_addr.sa_family);
 	old_s = ctx->io_s;
 	ctx->io_s = s;
 
-	printf("%s: flags=%x", ctx->ifname, ifa->ifa_flags);
+	xo_open_instance("interface");
+	xo_emit("{:ifname/%s}: flags={:flags-hex/%x}", ctx->ifname, ifa->ifa_flags);
 	print_bits("flags", &ifa->ifa_flags, 1, IFFBITS, nitems(IFFBITS));
 	print_metric(ctx);
 	print_mtu(ctx);
-	putchar('\n');
+	xo_emit("\n");
 
 	print_description(ctx);
 
@@ -1855,6 +1894,7 @@ status(if_ctx *ctx, const struct sockaddr_dl *sdl __unused, struct ifaddrs *ifa)
 
 	tunnel_status(ctx);
 
+	xo_open_list("address");
 	for (ift = ifa; ift != NULL; ift = ift->ifa_next) {
 		if (ift->ifa_addr == NULL)
 			continue;
@@ -1863,11 +1903,18 @@ status(if_ctx *ctx, const struct sockaddr_dl *sdl __unused, struct ifaddrs *ifa)
 		if (allfamilies) {
 			const struct afswtch *p;
 			p = af_getbyfamily(ift->ifa_addr->sa_family);
-			if (p != NULL && p->af_status != NULL)
+			if (p != NULL && p->af_status != NULL) {
+				xo_open_instance("address");
 				p->af_status(ctx, ift);
-		} else if (args->afp->af_af == ift->ifa_addr->sa_family)
+				xo_close_instance("address");
+			}
+		} else if (args->afp->af_af == ift->ifa_addr->sa_family) {
+			xo_open_instance("address");
 			args->afp->af_status(ctx, ift);
+			xo_close_instance("address");
+		}
 	}
+	xo_close_list("address");
 #if 0
 	if (allfamilies || afp->af_af == AF_LINK) {
 		const struct afswtch *lafp;
@@ -1894,6 +1941,7 @@ status(if_ctx *ctx, const struct sockaddr_dl *sdl __unused, struct ifaddrs *ifa)
 	if (args->verbose > 0)
 		sfp_status(ctx);
 
+	xo_close_instance("interface");
 	close(s);
 	ctx->io_s = old_s;
 	return;
@@ -1912,15 +1960,15 @@ Perrorc(const char *cmd, int error)
 	switch (errno) {
 
 	case ENXIO:
-		errx(1, "%s: no such interface", cmd);
+		xo_errx(1, "%s: no such interface", cmd);
 		break;
 
 	case EPERM:
-		errx(1, "%s: permission denied", cmd);
+		xo_errx(1, "%s: permission denied", cmd);
 		break;
 
 	default:
-		errc(1, error, "%s", cmd);
+		xo_errc(1, error, "%s", cmd);
 	}
 }
 
@@ -1935,22 +1983,32 @@ print_bits(const char *btype, uint32_t *v, const int v_count,
     const char **names, const int n_count)
 {
 	int num = 0;
+	char tag_fmt[64];
 
+	snprintf(tag_fmt, sizeof(tag_fmt), "{le:%s/%%s}", btype);
+	xo_open_list(btype);
 	for (int i = 0; i < v_count * 32; i++) {
 		bool is_set = v[i / 32] & (1U << (i % 32));
 		if (is_set) {
 			if (num++ == 0)
-				printf("<");
+				xo_emit("{P:<}");
 			if (num != 1)
-				printf(",");
-			if (i < n_count)
-				printf("%s", names[i]);
-			else
-				printf("%s_%d", btype, i);
+				xo_emit("{P:,}");
+			if (i < n_count) {
+				xo_emit("{P:/%s}", names[i]);
+				xo_emit(tag_fmt, names[i]);
+			} else {
+				char buf[64];
+
+				snprintf(buf, sizeof(buf), "%s_%d", btype, i);
+				xo_emit("{P:/%s}", buf);
+				xo_emit(tag_fmt, buf);
+			}
 		}
 	}
 	if (num > 0)
-		printf(">");
+		xo_emit("{P:>}");
+	xo_close_list(btype);
 }
 
 /*
@@ -1963,24 +2021,24 @@ printb(const char *s, unsigned v, const char *bits)
 	char c;
 
 	if (bits && *bits == 8)
-		printf("%s=%o", s, v);
+		xo_emit("{P:/%s=%o}", s, v);
 	else
-		printf("%s=%x", s, v);
+		xo_emit("{P:/%s=%x}", s, v);
 	if (bits) {
 		bits++;
-		putchar('<');
+		xo_emit("{P:<}");
 		while ((i = *bits++) != '\0') {
 			if (v & (1u << (i-1))) {
 				if (any)
-					putchar(',');
+					xo_emit("{P:,}");
 				any = 1;
 				for (; (c = *bits) > 32; bits++)
-					putchar(c);
+					xo_emit("{P:/%c}", c);
 			} else
 				for (; *bits > 32; bits++)
 					;
 		}
-		putchar('>');
+		xo_emit("{P:>}");
 	}
 }
 
@@ -1996,7 +2054,7 @@ print_vhid(const struct ifaddrs *ifa)
 	if (ifd->ifi_vhid == 0)
 		return;
 	
-	printf(" vhid %d", ifd->ifi_vhid);
+	xo_emit(" vhid {:vhid/%d}", ifd->ifi_vhid);
 }
 
 void

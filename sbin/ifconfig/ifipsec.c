@@ -48,6 +48,7 @@
 #include <errno.h>
 
 #include "ifconfig.h"
+#include <libxo/xo.h>
 
 static void
 ipsec_status(if_ctx *ctx)
@@ -57,7 +58,7 @@ ipsec_status(if_ctx *ctx)
 
 	if (ioctl_ctx_ifr(ctx, IPSECGREQID, &ifr) == -1)
 		return;
-	printf("\treqid: %u\n", reqid);
+	xo_emit("\treqid: {:reqid/%u}\n", reqid);
 }
 
 static void
@@ -69,11 +70,11 @@ setreqid(if_ctx *ctx, const char *val, int dummy __unused)
 
 	v = strtoul(val, &ep, 0);
 	if (*ep != '\0') {
-		warn("Invalid reqid value %s", val);
+		xo_warn("Invalid reqid value %s", val);
 		return;
 	}
 	if (ioctl_ctx_ifr(ctx, IPSECSREQID, &ifr) == -1) {
-		warn("ioctl(IPSECSREQID)");
+		xo_warn("ioctl(IPSECSREQID)");
 		return;
 	}
 }

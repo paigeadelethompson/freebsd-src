@@ -39,6 +39,7 @@
 #include <net/route.h>
 
 #include <ctype.h>
+#include <libxo/xo.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -63,9 +64,9 @@ gif_status(if_ctx *ctx)
 		return;
 	if (opts == 0)
 		return;
-	printf("\toptions=%x", opts);
+	xo_emit("\toptions={:options-hex/%x}", opts);
 	print_bits("options", &opts, 1, GIFBITS, nitems(GIFBITS));
-	putchar('\n');
+	xo_emit("\n");
 }
 
 static void
@@ -75,7 +76,7 @@ setgifopts(if_ctx *ctx, const char *val __unused, int d)
 	struct ifreq ifr = { .ifr_data = (caddr_t)&opts };
 
 	if (ioctl_ctx_ifr(ctx, GIFGOPTS, &ifr) == -1) {
-		warn("ioctl(GIFGOPTS)");
+		xo_warn("ioctl(GIFGOPTS)");
 		return;
 	}
 
@@ -85,7 +86,7 @@ setgifopts(if_ctx *ctx, const char *val __unused, int d)
 		opts |= d;
 
 	if (ioctl_ctx(ctx, GIFSOPTS, &ifr) == -1) {
-		warn("ioctl(GIFSOPTS)");
+		xo_warn("ioctl(GIFSOPTS)");
 		return;
 	}
 }

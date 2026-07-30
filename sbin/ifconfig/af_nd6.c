@@ -49,6 +49,8 @@
 
 #include <netinet6/nd6.h>
 
+#include <libxo/xo.h>
+
 #include "ifconfig.h"
 
 #define	MAX_SYSCTL_TRY	5
@@ -80,7 +82,7 @@ setnd6flags(if_ctx *ctx, const char *dummyaddr __unused, int d)
 	strlcpy(nd.ifname, ctx->ifname, sizeof(nd.ifname));
 	error = ioctl_ctx(ctx, SIOCGIFINFO_IN6, &nd);
 	if (error) {
-		warn("ioctl(SIOCGIFINFO_IN6)");
+		xo_warn("ioctl(SIOCGIFINFO_IN6)");
 		return;
 	}
 	if (d < 0)
@@ -89,7 +91,7 @@ setnd6flags(if_ctx *ctx, const char *dummyaddr __unused, int d)
 		nd.ndi.flags |= d;
 	error = ioctl_ctx(ctx, SIOCSIFINFO_IN6, (caddr_t)&nd);
 	if (error)
-		warn("ioctl(SIOCSIFINFO_IN6)");
+		xo_warn("ioctl(SIOCSIFINFO_IN6)");
 }
 
 void
@@ -108,14 +110,14 @@ setnd6defif(if_ctx *ctx, const char *dummyaddr __unused, int d)
 		} else
 			return;
 	} else if ((ifindex = if_nametoindex(ndifreq.ifname)) == 0) {
-		warn("if_nametoindex(%s)", ndifreq.ifname);
+		xo_warn("if_nametoindex(%s)", ndifreq.ifname);
 		return;
 	}
 
 	ndifreq.ifindex = ifindex;
 	error = ioctl_ctx(ctx, SIOCSDEFIFACE_IN6, (caddr_t)&ndifreq);
 	if (error)
-		warn("ioctl(SIOCSDEFIFACE_IN6)");
+		xo_warn("ioctl(SIOCSDEFIFACE_IN6)");
 }
 
 static int
@@ -130,7 +132,7 @@ isnd6defif(if_ctx *ctx, int s)
 	ifindex = if_nametoindex(ndifreq.ifname);
 	error = ioctl(s, SIOCGDEFIFACE_IN6, (caddr_t)&ndifreq);
 	if (error) {
-		warn("ioctl(SIOCGDEFIFACE_IN6)");
+		xo_warn("ioctl(SIOCGDEFIFACE_IN6)");
 		return (error);
 	}
 	return (ndifreq.ifindex == ifindex);
@@ -148,13 +150,13 @@ nd6_status(if_ctx *ctx)
 	strlcpy(nd.ifname, ctx->ifname, sizeof(nd.ifname));
 	if ((s6 = socket(AF_INET6, SOCK_DGRAM, 0)) < 0) {
 		if (errno != EAFNOSUPPORT && errno != EPROTONOSUPPORT)
-			warn("socket(AF_INET6, SOCK_DGRAM)");
+			xo_warn("socket(AF_INET6, SOCK_DGRAM)");
 		return;
 	}
 	error = ioctl(s6, SIOCGIFINFO_IN6, &nd);
 	if (error) {
 		if (errno != EPFNOSUPPORT)
-			warn("ioctl(SIOCGIFINFO_IN6)");
+			xo_warn("ioctl(SIOCGIFINFO_IN6)");
 		close(s6);
 		return;
 	}
@@ -163,7 +165,9 @@ nd6_status(if_ctx *ctx)
 	if (nd.ndi.flags == 0 && !isdefif)
 		return;
 	bits = (nd.ndi.flags | (isdefif << 15));
-	printf("\tnd6 options=%x", bits);
+	xo_open_container("nd6-options");
+	xo_emit("\tnd6 options={:options-hex/%x}", bits);
 	print_bits("options", &bits, 1, ND6BITS, nitems(ND6BITS));
-	putchar('\n');
+	xo_emit("\n");
+	xo_close_container("nd6-options");
 }

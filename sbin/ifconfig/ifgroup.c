@@ -42,6 +42,8 @@
 
 #include "ifconfig.h"
 
+#include <libxo/xo.h>
+
 static void
 setifgroup(if_ctx *ctx, const char *group_name, int dummy __unused)
 {
@@ -50,12 +52,12 @@ setifgroup(if_ctx *ctx, const char *group_name, int dummy __unused)
 	strlcpy(ifgr.ifgr_name, ctx->ifname, IFNAMSIZ);
 
 	if (group_name[0] && isdigit(group_name[strlen(group_name) - 1]))
-		errx(1, "setifgroup: group names may not end in a digit");
+		xo_errx(1, "setifgroup: group names may not end in a digit");
 
 	if (strlcpy(ifgr.ifgr_group, group_name, IFNAMSIZ) >= IFNAMSIZ)
-		errx(1, "setifgroup: group name too long");
+		xo_errx(1, "setifgroup: group name too long");
 	if (ioctl_ctx(ctx, SIOCAIFGROUP, (caddr_t)&ifgr) == -1 && errno != EEXIST)
-		err(1," SIOCAIFGROUP");
+		xo_err(1," SIOCAIFGROUP");
 }
 
 static void
@@ -66,12 +68,12 @@ unsetifgroup(if_ctx *ctx, const char *group_name, int dummy __unused)
 	strlcpy(ifgr.ifgr_name, ctx->ifname, IFNAMSIZ);
 
 	if (group_name[0] && isdigit(group_name[strlen(group_name) - 1]))
-		errx(1, "unsetifgroup: group names may not end in a digit");
+		xo_errx(1, "unsetifgroup: group names may not end in a digit");
 
 	if (strlcpy(ifgr.ifgr_group, group_name, IFNAMSIZ) >= IFNAMSIZ)
-		errx(1, "unsetifgroup: group name too long");
+		xo_errx(1, "unsetifgroup: group name too long");
 	if (ioctl_ctx(ctx, SIOCDIFGROUP, (caddr_t)&ifgr) == -1 && errno != ENOENT)
-		err(1, "SIOCDIFGROUP");
+		xo_err(1, "SIOCDIFGROUP");
 }
 
 static void
@@ -84,18 +86,22 @@ getifgroups(if_ctx *ctx)
 		return;
 
 	cnt = 0;
+	xo_open_list("group");
 	for (size_t i = 0; i < ifgr.ifgr_len / sizeof(struct ifg_req); ++i) {
 		struct ifg_req *ifg = &ifgr.ifgr_groups[i];
 
 		if (strcmp(ifg->ifgrq_group, "all")) {
 			if (cnt == 0)
-				printf("\tgroups:");
+				xo_emit("{P:\tgroups:}");
 			cnt++;
-			printf(" %s", ifg->ifgrq_group);
+			xo_open_instance("group");
+			xo_emit(" {:name/%s}", ifg->ifgrq_group);
+			xo_close_instance("group");
 		}
 	}
 	if (cnt)
-		printf("\n");
+		xo_emit("\n");
+	xo_close_list("group");
 
 	free(ifgr.ifgr_groups);
 }
@@ -110,7 +116,7 @@ printgroup(const char *groupname)
 
 	s = socket(AF_LOCAL, SOCK_DGRAM, 0);
 	if (s == -1)
-		err(1, "socket(AF_LOCAL,SOCK_DGRAM)");
+		xo_err(1, "socket(AF_LOCAL,SOCK_DGRAM)");
 	bzero(&ifgr, sizeof(ifgr));
 	strlcpy(ifgr.ifgr_name, groupname, sizeof(ifgr.ifgr_name));
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1) {
@@ -118,19 +124,19 @@ printgroup(const char *groupname)
 		    errno == ENOENT)
 			exit(exit_code);
 		else
-			err(1, "SIOCGIFGMEMB");
+			xo_err(1, "SIOCGIFGMEMB");
 	}
 
 	len = ifgr.ifgr_len;
 	if ((ifgr.ifgr_groups = calloc(1, len)) == NULL)
-		err(1, "printgroup");
+		xo_err(1, "printgroup");
 	if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1)
-		err(1, "SIOCGIFGMEMB");
+		xo_err(1, "SIOCGIFGMEMB");
 
 	for (ifg = ifgr.ifgr_groups; ifg && len >= sizeof(struct ifg_req);
 	    ifg++) {
 		len -= sizeof(struct ifg_req);
-		printf("%s\n", ifg->ifgrq_member);
+		xo_emit("{:member-name/%s}\n", ifg->ifgrq_member);
 	}
 	free(ifgr.ifgr_groups);
 

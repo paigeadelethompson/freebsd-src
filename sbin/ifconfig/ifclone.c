@@ -37,6 +37,7 @@
 
 #include <err.h>
 #include <libifconfig.h>
+#include <libxo/xo.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,16 +57,16 @@ list_cloners(void)
 	size_t cloners_count;
 
 	if (ifconfig_list_cloners(lifh, &cloners, &cloners_count) < 0)
-		errc(1, ifconfig_err_errno(lifh), "unable to list cloners");
+		xo_errc(1, ifconfig_err_errno(lifh), "unable to list cloners");
 
 	for (const char *name = cloners;
 	    name < cloners + cloners_count * IFNAMSIZ;
 	    name += IFNAMSIZ) {
 		if (name > cloners)
-			putchar(' ');
-		printf("%s", name);
+			xo_emit("{P: }");
+		xo_emit("{:cloner-name/%s}", name);
 	}
-	putchar('\n');
+	xo_emit("\n");
 	free(cloners);
 }
 
@@ -171,7 +172,7 @@ clone_destroy(if_ctx *ctx, const char *cmd __unused, int d __unused)
 	struct ifreq ifr = {};
 
 	if (ioctl_ctx_ifr(ctx, SIOCIFDESTROY, &ifr) < 0)
-		err(1, "SIOCIFDESTROY");
+		xo_err(1, "SIOCIFDESTROY");
 }
 
 static struct cmd clone_cmds[] = {

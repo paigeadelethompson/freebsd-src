@@ -48,6 +48,7 @@
 #include <string.h>
 
 #include "ifconfig.h"
+#include <libxo/xo.h>
 
 static void
 maclabel_status(if_ctx *ctx)
@@ -70,7 +71,7 @@ maclabel_status(if_ctx *ctx)
 		goto mac_free;
 
 	if (strlen(label_text) != 0)
-		printf("\tmaclabel %s\n", label_text);
+		xo_emit("{T:}maclabel {:maclabel/%s}\n", label_text);
 	free(label_text);
 
 mac_free:
@@ -85,7 +86,7 @@ setifmaclabel(if_ctx *ctx, const char *val, int d __unused)
 	int error;
 
 	if (mac_from_text(&label, val) == -1) {
-		perror(val);
+		xo_warn("%s", val); /* perror */
 		return;
 	}
 
@@ -96,7 +97,7 @@ setifmaclabel(if_ctx *ctx, const char *val, int d __unused)
 	error = ioctl(ctx->io_s, SIOCSIFMAC, &ifr);
 	mac_free(label);
 	if (error == -1)
-		perror("setifmac");
+		xo_warn("%s", "setifmac"); /* perror */
 }
 
 static struct cmd mac_cmds[] = {

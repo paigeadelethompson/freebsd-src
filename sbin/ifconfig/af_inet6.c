@@ -51,6 +51,8 @@
 
 #include <netinet6/nd6.h>	/* Define ND6_INFINITE_LIFETIME */
 
+#include <libxo/xo.h>
+
 #include "ifconfig.h"
 #include "ifconfig_netlink.h"
 
@@ -105,7 +107,7 @@ setifprefixlen(if_ctx *ctx __netlink_unused, const char *addr, int dummy __unuse
 	int plen = strtol(addr, NULL, 10);
 
 	if ((plen < 0) || (plen > 128))
-		errx(1, "%s: bad value", addr);
+		xo_errx(1, "%s: bad value", addr);
 	in6_add.addr.plen = plen;
 #endif
 	explicit_prefix = 1;
@@ -117,7 +119,7 @@ setip6flags(if_ctx *ctx, const char *dummyaddr __unused, int flag)
 	const struct afswtch *afp = ctx->afp;
 
 	if (afp->af_af != AF_INET6)
-		err(1, "address flags can be set only for inet6 addresses");
+		xo_err(1, "address flags can be set only for inet6 addresses");
 
 #ifdef WITHOUT_NETLINK
 	if (flag < 0)
@@ -148,9 +150,9 @@ setip6lifetime(if_ctx *ctx, const char *cmd, const char *val)
 	clock_gettime(CLOCK_MONOTONIC_FAST, &now);
 	newval = (time_t)strtoul(val, &ep, 0);
 	if (val == ep)
-		errx(1, "invalid %s", cmd);
+		xo_errx(1, "invalid %s", cmd);
 	if (afp->af_af != AF_INET6)
-		errx(1, "%s not allowed for the AF", cmd);
+		xo_errx(1, "%s not allowed for the AF", cmd);
 	if (strcmp(cmd, "vltime") == 0) {
 		lifetime->ia6t_expire = now.tv_sec + newval;
 		lifetime->ia6t_vltime = newval;
@@ -182,16 +184,16 @@ setip6eui64(if_ctx *ctx, const char *cmd, int dummy __unused)
 	struct in6_addr *in6;
 
 	if (afp->af_af != AF_INET6)
-		errx(EXIT_FAILURE, "%s not allowed for the AF", cmd);
+		xo_errx(EXIT_FAILURE, "%s not allowed for the AF", cmd);
 #ifdef WITHOUT_NETLINK
  	in6 = (struct in6_addr *)&in6_addreq.ifra_addr.sin6_addr;
 #else
 	in6 = &in6_add.addr.addr;
 #endif
 	if (memcmp(&in6addr_any.s6_addr[8], &in6->s6_addr[8], 8) != 0)
-		errx(EXIT_FAILURE, "interface index is already filled");
+		xo_errx(EXIT_FAILURE, "interface index is already filled");
 	if (getifaddrs(&ifap) != 0)
-		err(EXIT_FAILURE, "getifaddrs");
+		xo_err(EXIT_FAILURE, "getifaddrs");
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
 		if (ifa->ifa_addr->sa_family == AF_INET6 &&
 		    strcmp(ifa->ifa_name, ctx->ifname) == 0) {
@@ -203,7 +205,7 @@ setip6eui64(if_ctx *ctx, const char *cmd, int dummy __unused)
 		}
 	}
 	if (!lladdr)
-		errx(EXIT_FAILURE, "could not determine link local address"); 
+		xo_errx(EXIT_FAILURE, "could not determine link local address"); 
 
  	memcpy(&in6->s6_addr[8], &lladdr->s6_addr[8], 8);
 
@@ -227,7 +229,7 @@ print_addr(struct sockaddr_in6 *sin)
 	if (error != 0)
 		inet_ntop(AF_INET6, &sin->sin6_addr, addr_buf,
 			  sizeof(addr_buf));
-	printf("\tinet6 %s", addr_buf);
+	xo_emit("\tinet6 {:inet6-addr/%s}", addr_buf);
 }
 
 static void
@@ -240,48 +242,49 @@ print_p2p(struct sockaddr_in6 *sin)
 
 	if (error != 0)
 		inet_ntop(AF_INET6, &sin->sin6_addr, addr_buf, sizeof(addr_buf));
-	printf(" --> %s", addr_buf);
+	xo_emit(" --> {:dst-addr/%s}", addr_buf);
 }
 
 static void
 print_mask(int plen)
 {
 	if (f_inet6 != NULL && strcmp(f_inet6, "cidr") == 0)
-		printf("/%d", plen);
+		xo_emit("/{:prefixlen/%d}", plen);
 	else
-		printf(" prefixlen %d", plen);
+		xo_emit(" prefixlen {:prefixlen/%d}", plen);
 }
 
 static void
 print_flags(int flags6)
 {
+	xo_open_list("flags6");
 	if ((flags6 & IN6_IFF_ANYCAST) != 0)
-		printf(" anycast");
+		xo_emit(" {P:/anycast}{le:flags6/%s}", "anycast");
 	if ((flags6 & IN6_IFF_TENTATIVE) != 0)
-		printf(" tentative");
+		xo_emit(" {P:/tentative}{le:flags6/%s}", "tentative");
 	if ((flags6 & IN6_IFF_DUPLICATED) != 0)
-		printf(" duplicated");
+		xo_emit(" {P:/duplicated}{le:flags6/%s}", "duplicated");
 	if ((flags6 & IN6_IFF_DETACHED) != 0)
-		printf(" detached");
+		xo_emit(" {P:/detached}{le:flags6/%s}", "detached");
 	if ((flags6 & IN6_IFF_DEPRECATED) != 0)
-		printf(" deprecated");
+		xo_emit(" {P:/deprecated}{le:flags6/%s}", "deprecated");
 	if ((flags6 & IN6_IFF_AUTOCONF) != 0)
-		printf(" autoconf");
+		xo_emit(" {P:/autoconf}{le:flags6/%s}", "autoconf");
 	if ((flags6 & IN6_IFF_TEMPORARY) != 0)
-		printf(" temporary");
+		xo_emit(" {P:/temporary}{le:flags6/%s}", "temporary");
 	if ((flags6 & IN6_IFF_PREFER_SOURCE) != 0)
-		printf(" prefer_source");
-
+		xo_emit(" {P:/prefer_source}{le:flags6/%s}", "prefer_source");
+	xo_close_list("flags6");
 }
 
 static void
 print_lifetime(const char *prepend, time_t px_time, struct timespec *now)
 {
-	printf(" %s", prepend);
+	xo_emit(" {P:/%s}", prepend);
 	if (px_time == 0)
-		printf(" infty");
+		xo_emit(" {P:/infty}");
 
-	printf(" %s", px_time < now->tv_sec ? "0" : sec2str(px_time - now->tv_sec));
+	xo_emit(" {P:/%s}", px_time < now->tv_sec ? "0" : sec2str(px_time - now->tv_sec));
 }
 
 #ifdef WITHOUT_NETLINK
@@ -300,12 +303,12 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 
 	strlcpy(ifr6.ifr_name, ctx->ifname, sizeof(ifr6.ifr_name));
 	if ((s6 = socket(AF_INET6, SOCK_DGRAM, 0)) < 0) {
-		warn("socket(AF_INET6,SOCK_DGRAM)");
+		xo_warn("socket(AF_INET6,SOCK_DGRAM)");
 		return;
 	}
 	ifr6.ifr_addr = *sin;
 	if (ioctl(s6, SIOCGIFAFLAG_IN6, &ifr6) < 0) {
-		warn("ioctl(SIOCGIFAFLAG_IN6)");
+		xo_warn("ioctl(SIOCGIFAFLAG_IN6)");
 		close(s6);
 		return;
 	}
@@ -313,7 +316,7 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	memset(&lifetime, 0, sizeof(lifetime));
 	ifr6.ifr_addr = *sin;
 	if (ioctl(s6, SIOCGIFALIFETIME_IN6, &ifr6) < 0) {
-		warn("ioctl(SIOCGIFALIFETIME_IN6)");
+		xo_warn("ioctl(SIOCGIFALIFETIME_IN6)");
 		close(s6);
 		return;
 	}
@@ -340,7 +343,7 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	print_flags(flags6);
 
 	if ((satosin6(ifa->ifa_addr))->sin6_scope_id)
-		printf(" scopeid 0x%x",
+		xo_emit(" scopeid {:scopeid/0x%x}",
 		    (satosin6(ifa->ifa_addr))->sin6_scope_id);
 
 	if (ip6lifetime && (lifetime.ia6t_preferred || lifetime.ia6t_expire)) {
@@ -353,7 +356,7 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 
 	print_vhid(ifa);
 
-	putchar('\n');
+	xo_emit("\n");
 }
 
 #else
@@ -401,14 +404,14 @@ in6_status_nl(if_ctx *ctx __unused, if_link_t *link __unused, if_addr_t *ifa)
 	print_flags(ifa->ifaf_flags);
 
 	if (scopeid != 0)
-		printf(" scopeid 0x%x", scopeid);
+		xo_emit(" scopeid {:scopeid/0x%x}", scopeid);
 
 	show_lifetime(ifa->ifa_cacheinfo);
 
 	if (ifa->ifaf_vhid != 0)
-		printf(" vhid %d", ifa->ifaf_vhid);
+		xo_emit(" vhid {:vhid/%d}", ifa->ifaf_vhid);
 
-	putchar('\n');
+	xo_emit("\n");
 }
 
 static struct in6_px *sin6tab_nl[] = {
@@ -431,9 +434,9 @@ in6_getaddr(const char *addr_str, int which)
         struct in6_px *px = sin6tab_nl[which];
 
 	if (which == MASK)
-		errx(1, "netmask: invalid option for inet6");
+		xo_errx(1, "netmask: invalid option for inet6");
 	if (which == BRDADDR)
-		errx(1, "broadcast: invalid option for inet6");
+		xo_errx(1, "broadcast: invalid option for inet6");
 
         px->set = true;
         px->plen = 128;
@@ -443,7 +446,7 @@ in6_getaddr(const char *addr_str, int which)
                         *p = '\0';
                         int plen = strtol(p + 1, NULL, 10);
 			if (plen < 0 || plen > 128)
-                                errx(1, "%s: bad value", p + 1);
+                                xo_errx(1, "%s: bad value", p + 1);
                         px->plen = plen;
                         explicit_prefix = 1;
                 }
@@ -455,7 +458,7 @@ in6_getaddr(const char *addr_str, int which)
         int error = getaddrinfo(addr_str, NULL, &hints, &res);
         if (error != 0) {
                 if (inet_pton(AF_INET6, addr_str, &px->addr) != 1)
-                        errx(1, "%s: bad value", addr_str);
+                        xo_errx(1, "%s: bad value", addr_str);
         } else {
                 struct sockaddr_in6 *sin6;
 
@@ -525,7 +528,7 @@ in6_getprefix(const char *plen, int which)
 	int len = atoi(plen);
 
 	if ((len < 0) || (len > 128))
-		errx(1, "%s: bad value", plen);
+		xo_errx(1, "%s: bad value", plen);
 	sin->sin6_len = sizeof(*sin);
 	if (which != MASK)
 		sin->sin6_family = AF_INET6;
@@ -565,7 +568,7 @@ in6_getaddr(const char *s, int which)
 		error = getaddrinfo(s, NULL, &hints, &res);
 		if (error != 0) {
 			if (inet_pton(AF_INET6, s, &sin->sin6_addr) != 1)
-				errx(1, "%s: bad value", s);
+				xo_errx(1, "%s: bad value", s);
 		} else {
 			bcopy(res->ai_addr, sin, res->ai_addrlen);
 			freeaddrinfo(res);
@@ -671,7 +674,7 @@ in6_status_tunnel(if_ctx *ctx)
 	    NI_NUMERICHOST) != 0)
 		dst[0] = '\0';
 
-	printf("\ttunnel inet6 %s --> %s\n", src, dst);
+	xo_emit("\ttunnel inet6 {:tunnel-src/%s} --> {:tunnel-dst/%s}\n", src, dst);
 }
 
 static void
@@ -685,7 +688,7 @@ in6_set_tunnel(if_ctx *ctx, struct addrinfo *srcres, struct addrinfo *dstres)
 	    dstres->ai_addr->sa_len);
 
 	if (ioctl_ctx(ctx, SIOCSIFPHYADDR_IN6, &in6_req) < 0)
-		warn("SIOCSIFPHYADDR_IN6");
+		xo_warn("SIOCSIFPHYADDR_IN6");
 }
 
 static void

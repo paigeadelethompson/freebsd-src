@@ -44,6 +44,7 @@
 #include <arpa/inet.h>
 
 #include <ctype.h>
+#include <libxo/xo.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -74,9 +75,10 @@ stf_status(if_ctx *ctx)
 	if (do_cmd(ctx, STF6RD_GV4NET, &param, sizeof(param), 0) < 0)
 		return;
 
-	printf("\tv4net %s/%d -> ", inet_ntoa(param.srcv4_addr),
+	xo_emit("\tv4net {:srcv4-addr/%s}/{:v4-prefixlen/%d} -> ",
+	    inet_ntoa(param.srcv4_addr),
 	    param.v4_prefixlen ? param.v4_prefixlen : 32);
-	printf("tv4br %s\n", inet_ntoa(param.braddr));
+	xo_emit("tv4br {:braddr/%s}\n", inet_ntoa(param.braddr));
 }
 
 static void
@@ -91,11 +93,11 @@ setstf_br(if_ctx *ctx, const char *val, int d __unused)
 	sin.sin_family = AF_INET;
 
 	if (!inet_aton(val, &sin.sin_addr))
-		errx(1, "%s: bad value", val);
+		xo_errx(1, "%s: bad value", val);
 
 	req.braddr = sin.sin_addr;
 	if (do_cmd(ctx, STF6RD_SBR, &req, sizeof(req), 1) < 0)
-		err(1, "STF6RD_SBR%s",  val);
+		xo_err(1, "STF6RD_SBR%s",  val);
 }
 
 static void
@@ -113,21 +115,21 @@ setstf_set(if_ctx *ctx, const char *val, int d __unused)
 
 	p = strrchr(val, '/');
 	if (p == NULL)
-		errx(2, "Wrong argument given");
+		xo_errx(2, "Wrong argument given");
 
 	*p = '\0';
 	req.v4_prefixlen = (int)strtonum(p + 1, 0, 32, &errstr);
 	if (errstr != NULL || req.v4_prefixlen == 0) {
 		*p = '/';
-		errx(1, "%s: bad value (prefix length %s)", val, errstr);
+		xo_errx(1, "%s: bad value (prefix length %s)", val, errstr);
 	}
 
 	if (!inet_aton(val, &sin.sin_addr))
-		errx(1, "%s: bad value", val);
+		xo_errx(1, "%s: bad value", val);
 
 	memcpy(&req.srcv4_addr, &sin.sin_addr, sizeof(req.srcv4_addr));
 	if (do_cmd(ctx, STF6RD_SV4NET, &req, sizeof(req), 1) < 0)
-		err(1, "STF6RD_SV4NET %s",  val);
+		xo_err(1, "STF6RD_SV4NET %s",  val);
 }
 
 static struct cmd stf_cmds[] = {

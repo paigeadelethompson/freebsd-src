@@ -89,6 +89,8 @@
 
 #include "ifconfig.h"
 
+#include <libxo/xo.h>
+
 static void domediaopt(if_ctx *, const char *, bool);
 static ifmedia_t get_media_subtype(ifmedia_t, const char *);
 static ifmedia_t get_media_mode(ifmedia_t, const char *);
@@ -105,51 +107,54 @@ media_status(if_ctx *ctx)
 		return;
 
 	if (ifmr->ifm_count == 0) {
-		warnx("%s: no media types?", ctx->ifname);
+		xo_warnx("%s: no media types?", ctx->ifname);
 		goto free;
 	}
 
-	printf("\tmedia: ");
+	xo_emit("{P:\tmedia: }");
+	xo_open_list("media");
 	print_media(ifmr->ifm_current, true);
 	if (ifmr->ifm_active != ifmr->ifm_current) {
-		putchar(' ');
-		putchar('(');
+		xo_emit("{P: (}");
 		print_media(ifmr->ifm_active, false);
-		putchar(')');
+		xo_emit("{P:)}");
 	}
+	xo_close_list("media");
 
-	putchar('\n');
+	xo_emit("{P:\n}");
 
 	if (ifmr->ifm_status & IFM_AVALID) {
 		struct ifdownreason ifdr;
 		const char *status;
 
 		status = ifconfig_media_get_status(ifmr);
-		printf("\tstatus: %s", status);
+		xo_emit("{P:\tstatus: }{:status/%s}", status);
 		if (strcmp(status, "no carrier") == 0 &&
 		    ifconfig_media_get_downreason(lifh, ctx->ifname, &ifdr) == 0) {
 			switch (ifdr.ifdr_reason) {
 			case IFDR_REASON_MSG:
-				printf(" (%s)", ifdr.ifdr_msg);
+				xo_emit("{P: (}{:reason-msg/%s}{P:)}", ifdr.ifdr_msg);
 				break;
 			case IFDR_REASON_VENDOR:
-				printf(" (vendor code %d)",
+				xo_emit("{P: (vendor code }{:vendor-code/%d}{P:)}",
 				    ifdr.ifdr_vendor);
 				break;
 			default:
 				break;
 			}
 		}
-		putchar('\n');
+		xo_emit("{P:\n}");
 	}
 
 	if (ctx->args->supmedia) {
-		printf("\tsupported media:\n");
+		xo_emit("{P:\tsupported media:}{P:\n}");
+		xo_open_list("media");
 		for (int i = 0; i < ifmr->ifm_count; ++i) {
-			printf("\t\t");
+			xo_emit("{P:\t\t}");
 			print_media_ifconfig(ifmr->ifm_ulist[i]);
-			putchar('\n');
+			xo_emit("{P:\n}");
 		}
+		xo_close_list("media");
 	}
 free:
 	free(ifmr);
@@ -164,11 +169,11 @@ ifmedia_getstate(if_ctx *ctx)
 		return (ifmr);
 
 	if (ifconfig_media_get_mediareq(lifh, ctx->ifname, &ifmr) == -1)
-		errc(1, ifconfig_err_errno(lifh),
+		xo_errc(1, ifconfig_err_errno(lifh),
 		    "%s: ifconfig_media_get_mediareq", ctx->ifname);
 
 	if (ifmr->ifm_count == 0)
-		errx(1, "%s: no media types?", ctx->ifname);
+		xo_errx(1, "%s: no media types?", ctx->ifname);
 
 	return (ifmr);
 }
@@ -183,7 +188,7 @@ setifmediacallback(if_ctx *ctx, void *arg)
 	if (!did_it) {
 		ifr.ifr_media = ifmr->ifm_current;
 		if (ioctl_ctx_ifr(ctx, SIOCSIFMEDIA, &ifr) < 0)
-			err(1, "SIOCSIFMEDIA (media)");
+			xo_err(1, "SIOCSIFMEDIA (media)");
 		free(ifmr);
 		did_it = true;
 	}
@@ -260,7 +265,7 @@ setmediainst(if_ctx *ctx, const char *val, int d __unused)
 
 	inst = atoi(val);
 	if (inst < 0 || inst > (int)IFM_INST_MAX)
-		errx(1, "invalid media instance: %s", val);
+		xo_errx(1, "invalid media instance: %s", val);
 
 	ifmr->ifm_current = (ifmr->ifm_current & ~IFM_IMASK) | inst << IFM_ISHIFT;
 
@@ -292,11 +297,11 @@ get_media_subtype(ifmedia_t media, const char *val)
 		return (subtype);
 	switch (errno) {
 	case EINVAL:
-		errx(EXIT_FAILURE, "unknown media type 0x%x", media);
+		xo_errx(EXIT_FAILURE, "unknown media type 0x%x", media);
 	case ENOENT:
-		errx(EXIT_FAILURE, "unknown media subtype: %s", val);
+		xo_errx(EXIT_FAILURE, "unknown media subtype: %s", val);
 	default:
-		err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
+		xo_err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
 	}
 	/*NOTREACHED*/
 }
@@ -311,11 +316,11 @@ get_media_mode(ifmedia_t media, const char *val)
 		return (mode);
 	switch (errno) {
 	case EINVAL:
-		errx(EXIT_FAILURE, "unknown media type 0x%x", media);
+		xo_errx(EXIT_FAILURE, "unknown media type 0x%x", media);
 	case ENOENT:
 		return (INVALID_IFMEDIA);
 	default:
-		err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
+		xo_err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
 	}
 	/*NOTREACHED*/
 }
@@ -334,7 +339,7 @@ get_media_options(ifmedia_t media, const char *val)
 	 */
 	opts = strdup(val);
 	if (opts == NULL)
-		err(EXIT_FAILURE, "strdup");
+		xo_err(EXIT_FAILURE, "strdup");
 
 	/*
 	 * Split the comma-delimited list into separate strings.
@@ -348,7 +353,7 @@ get_media_options(ifmedia_t media, const char *val)
 	}
 	optnames = calloc(nopts, sizeof(*optnames));
 	if (optnames == NULL)
-		err(EXIT_FAILURE, "calloc");
+		xo_err(EXIT_FAILURE, "calloc");
 	opt = opts;
 	for (size_t i = 0; i < nopts; ++i) {
 		optnames[i] = opt;
@@ -360,11 +365,11 @@ get_media_options(ifmedia_t media, const char *val)
 	 */
 	options = ifconfig_media_lookup_options(media, optnames, nopts);
 	if (options == NULL)
-		err(EXIT_FAILURE, "ifconfig_media_lookup_options");
+		xo_err(EXIT_FAILURE, "ifconfig_media_lookup_options");
 	rval = 0;
 	for (size_t i = 0; i < nopts; ++i) {
 		if (options[i] == INVALID_IFMEDIA)
-			errx(EXIT_FAILURE, "unknown option: %s", optnames[i]);
+			xo_errx(EXIT_FAILURE, "unknown option: %s", optnames[i]);
 		rval |= options[i];
 	}
 	free(options);
@@ -378,42 +383,54 @@ print_media(ifmedia_t media, bool print_toptype)
 {
 	const char *val, **options;
 
+	xo_open_instance("media");
+
 	val = ifconfig_media_get_type(media);
 	if (val == NULL) {
-		printf("<unknown type>");
+		xo_emit("{P:<unknown type>}");
+		xo_close_instance("media");
 		return;
 	} else if (print_toptype) {
-		printf("%s", val);
+		xo_emit("{:type/%s}", val);
 	}
 
 	val = ifconfig_media_get_subtype(media);
 	if (val == NULL) {
-		printf("<unknown subtype>");
+		xo_emit("{P:<unknown subtype>}");
+		xo_close_instance("media");
 		return;
 	}
 
 	if (print_toptype)
-		putchar(' ');
+		xo_emit("{P: }");
 
-	printf("%s", val);
+	xo_emit("{:subtype/%s}", val);
 
 	if (print_toptype) {
 		val = ifconfig_media_get_mode(media);
 		if (val != NULL && strcasecmp("autoselect", val) != 0)
-			printf(" mode %s", val);
+			xo_emit("{P: mode }{:mode/%s}", val);
 	}
 
 	options = ifconfig_media_get_options(media);
 	if (options != NULL && options[0] != NULL) {
-		printf(" <%s", options[0]);
-		for (size_t i = 1; options[i] != NULL; ++i)
-			printf(",%s", options[i]);
-		printf(">");
+		xo_emit("{P: <}");
+		xo_open_list("option");
+		for (size_t i = 0; options[i] != NULL; ++i) {
+			if (i > 0)
+				xo_emit("{P:,}");
+			xo_emit("{P:/%s}", options[i]);
+			xo_emit("{le:option/%s}", options[i]);
+		}
+		xo_close_list("option");
+		xo_emit("{P:>}");
 	}
 	free(options);
 
 	if (print_toptype && IFM_INST(media) != 0)
-		printf(" instance %d", IFM_INST(media));
+		xo_emit("{P: instance }{:instance/%d}", IFM_INST(media));
+
+	xo_close_instance("media");
 }
 
 static void
@@ -421,9 +438,12 @@ print_media_ifconfig(ifmedia_t media)
 {
 	const char *val, **options;
 
+	xo_open_instance("media");
+
 	val = ifconfig_media_get_type(media);
 	if (val == NULL) {
-		printf("<unknown type>");
+		xo_emit("{P:<unknown type>}");
+		xo_close_instance("media");
 		return;
 	}
 
@@ -434,26 +454,35 @@ print_media_ifconfig(ifmedia_t media)
 
 	val = ifconfig_media_get_subtype(media);
 	if (val == NULL) {
-		printf("<unknown subtype>");
+		xo_emit("{P:<unknown subtype>}");
+		xo_close_instance("media");
 		return;
 	}
 
-	printf("media %s", val);
+	xo_emit("{P:media }{:subtype/%s}", val);
 
 	val = ifconfig_media_get_mode(media);
 	if (val != NULL)
-		printf(" mode %s", val);
+		xo_emit("{P: mode }{:mode/%s}", val);
 
 	options = ifconfig_media_get_options(media);
 	if (options != NULL && options[0] != NULL) {
-		printf(" mediaopt %s", options[0]);
-		for (size_t i = 1; options[i] != NULL; ++i)
-			printf(",%s", options[i]);
+		xo_emit("{P: mediaopt }");
+		xo_open_list("option");
+		for (size_t i = 0; options[i] != NULL; ++i) {
+			if (i > 0)
+				xo_emit("{P:,}");
+			xo_emit("{P:/%s}", options[i]);
+			xo_emit("{le:option/%s}", options[i]);
+		}
+		xo_close_list("option");
 	}
 	free(options);
 
 	if (IFM_INST(media) != 0)
-		printf(" instance %d", IFM_INST(media));
+		xo_emit("{P: instance }{:instance/%d}", IFM_INST(media));
+
+	xo_close_instance("media");
 }
 
 /**********************************************************************

@@ -35,6 +35,8 @@
 #include <errno.h>
 #include <netdb.h>
 
+#include <libxo/xo.h>
+
 #include <sys/bitcount.h>
 #include <sys/param.h>
 #include <sys/linker.h>
@@ -92,12 +94,12 @@ nl_init_socket(struct snl_state *ss)
 	if (modfind("netlink") == -1 && errno == ENOENT) {
 		/* Try to load */
 		if (kldload("netlink") == -1)
-			err(1, "netlink is not loaded and load attempt failed");
+			xo_err(1, "netlink is not loaded and load attempt failed");
 		if (snl_init(ss, NETLINK_ROUTE))
 			return;
 	}
 
-	err(1, "unable to open netlink socket");
+	xo_err(1, "unable to open netlink socket");
 }
 
 int
@@ -350,17 +352,17 @@ print_ifcaps(if_ctx *ctx, if_link_t *link)
 	if (sz_u32 > 0) {
 		uint32_t *caps = link->iflaf_caps.nla_bitset_value;
 
-		printf("\toptions=%x", caps[0]);
-		print_bits("IFCAPS", caps, sz_u32, ifcap_bit_names, nitems(ifcap_bit_names));
-		putchar('\n');
+		xo_emit("\toptions={:options/%x}", caps[0]);
+		print_bits("interface-capabilities", caps, sz_u32, ifcap_bit_names, nitems(ifcap_bit_names));
+		xo_emit("\n");
 	}
 
 	if (ctx->args->supmedia && sz_u32 > 0) {
 		uint32_t *caps = link->iflaf_caps.nla_bitset_mask;
 
-		printf("\tcapabilities=%x", caps[0]);
-		print_bits("IFCAPS", caps, sz_u32, ifcap_bit_names, nitems(ifcap_bit_names));
-		putchar('\n');
+		xo_emit("\tcapabilities={:capabilities/%x}", caps[0]);
+		print_bits("interface-capabilities", caps, sz_u32, ifcap_bit_names, nitems(ifcap_bit_names));
+		xo_emit("\n");
 	}
 }
 
@@ -368,19 +370,21 @@ static void
 status_nl(if_ctx *ctx, struct iface *iface)
 {
 	if_link_t *link = &iface->link;
+
+	xo_open_instance("interface");
 	struct ifconfig_args *args = ctx->args;
 	char *drivername = NULL;
 
-	printf("%s: ", link->ifla_ifname);
+	xo_emit("{:ifname/%s}: ", link->ifla_ifname);
 
-	printf("flags=%x", link->ifi_flags);
-	print_bits("IFF", &link->ifi_flags, 1, IFFBITS, nitems(IFFBITS));
+	xo_emit("flags={:flags-hex/%x}", link->ifi_flags);
+	print_bits("interface-flags", &link->ifi_flags, 1, IFFBITS, nitems(IFFBITS));
 
 	print_metric(ctx);
-	printf(" mtu %d\n", link->ifla_mtu);
+	xo_emit(" mtu {:mtu/%d}\n", link->ifla_mtu);
 
 	if (link->ifla_ifalias != NULL)
-		printf("\tdescription: %s\n", link->ifla_ifalias);
+		xo_emit("\tdescription: {:descr/%s}\n", link->ifla_ifalias);
 
 	print_ifcaps(ctx, link);
 	tunnel_status(ctx);
@@ -394,18 +398,25 @@ status_nl(if_ctx *ctx, struct iface *iface)
 
 	sort_iface_ifaddrs(ctx->io_ss, iface);
 
+	xo_open_list("address");
 	for (struct ifa *ifa = iface->ifa; ifa != NULL; ifa = ifa->next) {
 		if (args->allfamilies) {
 			const struct afswtch *p = af_getbyfamily(ifa->addr.ifa_family);
 
-			if (p != NULL)
+			if (p != NULL) {
+				xo_open_instance("address");
 				p->af_status(ctx, link, &ifa->addr);
+				xo_close_instance("address");
+			}
 		} else if (args->afp->af_af == ifa->addr.ifa_family) {
 			const struct afswtch *p = args->afp;
 
+			xo_open_instance("address");
 			p->af_status(ctx, link, &ifa->addr);
+			xo_close_instance("address");
 		}
 	}
+	xo_close_list("address");
 
 	/* TODO: convert to netlink */
 	if (args->allfamilies)
@@ -415,23 +426,23 @@ status_nl(if_ctx *ctx, struct iface *iface)
 
 	print_ifstatus(ctx);
 	if (args->drivername || args->verbose) {
-		if (ifconfig_get_orig_name(lifh, link->ifla_ifname,
-		    &drivername) != 0) {
-			if (ifconfig_err_errtype(lifh) == OTHER)
-				fprintf(stderr, "get original name: %s\n",
-				    strerror(ifconfig_err_errno(lifh)));
-			else
-				fprintf(stderr,
-				    "get original name: error type %d\n",
-				    ifconfig_err_errtype(lifh));
-			exit_code = 1;
-		}
+	if (ifconfig_get_orig_name(lifh, link->ifla_ifname,
+	    &drivername) != 0) {
+		if (ifconfig_err_errtype(lifh) == OTHER)
+			xo_warnx("get original name: %s",
+			    strerror(ifconfig_err_errno(lifh)));
+		else
+			xo_warnx("get original name: error type %d",
+			    ifconfig_err_errtype(lifh));
+		exit_code = 1;
+	}
 		if (drivername != NULL)
-			printf("\tdrivername: %s\n", drivername);
+			xo_emit("\tdrivername: {:drivername/%s}\n", drivername);
 		free(drivername);
 	}
 	if (args->verbose > 0)
 		sfp_status(ctx);
+	xo_close_instance("interface");
 }
 
 static int
@@ -440,7 +451,7 @@ get_local_socket(void)
 	int s = socket(AF_LOCAL, SOCK_DGRAM, 0);
 
 	if (s < 0)
-		err(1, "socket(family %u,SOCK_DGRAM)", AF_LOCAL);
+		xo_err(1, "socket(family %u,SOCK_DGRAM)", AF_LOCAL);
 	return (s);
 }
 
@@ -469,6 +480,7 @@ list_interfaces_nl(struct ifconfig_args *args)
 	qsort(sorted_ifaces, ifmap->count, sizeof(void *), cmp_iface);
 	prepare_ifaddrs(&ss, ifmap);
 
+	xo_open_list("interface");
 	for (uint32_t i = 0, num = 0; i < ifmap->count; i++) {
 		struct iface *iface = sorted_ifaces[i];
 
@@ -478,16 +490,19 @@ list_interfaces_nl(struct ifconfig_args *args)
 		ctx->ifname = iface->link.ifla_ifname;
 
 		if (args->namesonly) {
+			xo_open_instance("interface");
 			if (num++ != 0)
-				printf(" ");
-			fputs(iface->link.ifla_ifname, stdout);
+				xo_emit("{P: }");
+			xo_emit("{:ifname/%s}", iface->link.ifla_ifname);
+			xo_close_instance("interface");
 		} else if (args->argc == 0)
 			status_nl(ctx, iface);
 		else
 			ifconfig_ioctl(ctx, 0, args->afp);
 	}
+	xo_close_list("interface");
 	if (args->namesonly)
-		printf("\n");
+		xo_emit("\n");
 
 	close(ctx->io_s);
 	snl_free(&ss);
