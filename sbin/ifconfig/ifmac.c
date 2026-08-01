@@ -86,7 +86,7 @@ setifmaclabel(if_ctx *ctx, const char *val, int d __unused)
 	int error;
 
 	if (mac_from_text(&label, val) == -1) {
-		xo_warn("%s", val); /* perror */
+		Perror(val);
 		return;
 	}
 
@@ -97,7 +97,7 @@ setifmaclabel(if_ctx *ctx, const char *val, int d __unused)
 	error = ioctl(ctx->io_s, SIOCSIFMAC, &ifr);
 	mac_free(label);
 	if (error == -1)
-		xo_warn("%s", "setifmac"); /* perror */
+		Perror("setifmac");
 }
 
 static struct cmd mac_cmds[] = {

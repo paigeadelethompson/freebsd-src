@@ -4015,7 +4015,7 @@ scan_and_wait(if_ctx *ctx)
 
 	sroute = socket(PF_ROUTE, SOCK_RAW, 0);
 	if (sroute < 0) {
-		xo_warn("%s", "socket(PF_ROUTE,SOCK_RAW)"); /* perror */
+		Perror("socket(PF_ROUTE,SOCK_RAW)");
 		return;
 	}
 	memset(&ireq, 0, sizeof(ireq));
@@ -4044,7 +4044,7 @@ scan_and_wait(if_ctx *ctx)
 
 		do {
 			if (read(sroute, buf, sizeof(buf)) < 0) {
-				xo_warn("%s", "read(PF_ROUTE)"); /* perror */
+				Perror("read(PF_ROUTE)");
 				break;
 			}
 			rtm = (struct rt_msghdr *)(void *)buf;
