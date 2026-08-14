@@ -23,6 +23,11 @@
 
 int ifconfig_xml_dry_run;
 
+/*
+ * XML element identifiers parsed from the interface configuration XML file.
+ * Each enum value corresponds to a recognized XML element name used during
+ * SAX-style parsing of the XML document.
+ */
 enum {
 	ELEM_NONE,
 	ELEM_INTERFACE,
@@ -127,6 +132,11 @@ enum {
 	ELEM_WME_TXOPLIMIT,
 };
 
+/*
+ * Per-interface configuration collected from the XML.
+ * Stores the interface name, a set of generic arguments (argv/argc),
+ * and parsed address family fields (inet4/inet6).
+ */
 struct ifxml_cfg {
 	char ifname[IFNAMSIZ];
 	bool ifname_set;
@@ -141,6 +151,11 @@ struct ifxml_cfg {
 	char inet6_prefixlen[16];
 };
 
+/*
+ * Address block parsed from inside an <address> container element.
+ * Holds the raw text for inet4/inet6 addresses, destination, netmask,
+ * broadcast, and prefix length.
+ */
 struct ifxml_addr {
 	char inet_addr[128];
 	char inet6_addr[128];
@@ -150,6 +165,10 @@ struct ifxml_addr {
 	char prefixlen[16];
 };
 
+/*
+ * One member interface of a bridge, with optional priority, path cost,
+ * VLAN protocol, max address limit, untagged VLAN, and tagged VLAN range.
+ */
 struct ifxml_bridge_member {
 	char name[IFNAMSIZ];
 	char priority[16];
@@ -160,6 +179,11 @@ struct ifxml_bridge_member {
 	char *vlan_tagged;
 };
 
+/*
+ * Bridge configuration parsed from a <bridge> element.
+ * Contains global bridge parameters (priority, timers, STP proto, etc.)
+ * and an array of member interfaces.
+ */
 struct ifxml_bridge {
 	struct ifxml_bridge_member members[MAX_BRIDGE_MEMBERS];
 	int num_members;
@@ -174,10 +198,17 @@ struct ifxml_bridge {
 	char *defuntagged;
 };
 
+/*
+ * One port member of a link-aggregation (lagg) interface.
+ */
 struct ifxml_lagg_port {
 	char name[IFNAMSIZ];
 };
 
+/*
+ * Lagg configuration parsed from XML. Holds the aggregation protocol,
+ * hash selection flags, and an array of port members.
+ */
 struct ifxml_lagg {
 	struct ifxml_lagg_port ports[MAX_LAGG_PORTS];
 	int num_ports;
@@ -185,6 +216,12 @@ struct ifxml_lagg {
 	char hash[64];
 };
 
+/*
+ * Main parsing state for the XML configuration file.
+ * Holds the Expat parser, the interface context, a stack of element IDs,
+ * text accumulator, and all the sub-structures that accumulate data for
+ * the current interface, bridge, lagg, vxlan, pfsync, wlan, etc.
+ */
 struct ifxml_state {
 	XML_Parser parser;
 	if_ctx *ctx;
@@ -264,12 +301,19 @@ static void cfg_add_arg(struct ifxml_cfg *cfg, const char *arg);
 static void cfg_add_arg_kv(struct ifxml_cfg *cfg, const char *key,
     const char *val);
 
+/*
+ * Return non-zero if the string is NULL or its first character is '\0'.
+ */
 static int
 null_or_empty(const char *s)
 {
 	return s == NULL || s[0] == EMPTY;
 }
 
+/*
+ * Compare two strings for equality by checking length first, then content.
+ * Returns 1 if equal, 0 otherwise.
+ */
 static int
 str_eq(const char *a, const char *b)
 {
@@ -284,12 +328,20 @@ str_eq(const char *a, const char *b)
 	return strncmp(a, b, la) == 0;
 }
 
+/*
+ * Append string s to buffer buf using strlcat with the given buffer size.
+ */
 static void
 concat(char *buf, size_t bufsz, const char *s)
 {
 	strlcat(buf, s, bufsz);
 }
 
+/*
+ * Look up a WLAN parameter name and map it to an ifconfig command.
+ * Sets *cmd to the command string and *is_flag to 1 if the command
+ * is a flag (no value), 0 if it takes a value. Returns 1 on match.
+ */
 static int
 wlan_lookup(const char *name, const char **cmd, int *is_flag)
 {
@@ -368,6 +420,10 @@ wlan_lookup(const char *name, const char **cmd, int *is_flag)
 	return 0;
 }
 
+/*
+ * Return ELEM_WLAN if the element name is a known WLAN parameter,
+ * otherwise return ELEM_NONE.
+ */
 static int
 wlan_elem_id(const char *name)
 {
@@ -382,6 +438,11 @@ wlan_elem_id(const char *name)
 	return ELEM_NONE;
 }
 
+/*
+ * Emit ifconfig arguments for a WLAN XML element.  Handles special
+ * cases like smps, location, chan-num, ssid, authmode, and delegates
+ * to wlan_lookup for the rest.
+ */
 static void
 wlan_emit_cmd(struct ifxml_state *st, const char *name, const char *txt)
 {
@@ -437,6 +498,11 @@ wlan_emit_cmd(struct ifxml_state *st, const char *name, const char *txt)
 	}
 }
 
+/*
+ * Emit a WME (Wireless Multimedia Extensions) ifconfig argument.
+ * The command is only emitted if we are inside a WME-ACI element and
+ * the ACI name matches one of the known access categories.
+ */
 static void
 wme_emit_cmd(struct ifxml_state *st, const char *cmd, const char *val)
 {
@@ -456,6 +522,10 @@ wme_emit_cmd(struct ifxml_state *st, const char *cmd, const char *val)
 	cfg_add_arg(&st->cfg, strdup(val));
 }
 
+/*
+ * Map an XML element name to its corresponding ELEM_* identifier.
+ * Delegates WLAN-specific names to wlan_elem_id.
+ */
 static int
 elem_id(const char *name)
 {
@@ -662,6 +732,9 @@ elem_id(const char *name)
 	return ELEM_NONE;
 }
 
+/*
+ * Push an element ID onto the state stack (used to track XML nesting).
+ */
 static void
 push_elem(struct ifxml_state *st, int id)
 {
@@ -669,6 +742,10 @@ push_elem(struct ifxml_state *st, int id)
 		st->stack[st->sp++] = id;
 }
 
+/*
+ * Pop the top element ID from the state stack and return it.
+ * Returns ELEM_NONE if the stack is empty.
+ */
 static int
 pop_elem(struct ifxml_state *st)
 {
@@ -677,6 +754,10 @@ pop_elem(struct ifxml_state *st)
 	return ELEM_NONE;
 }
 
+/*
+ * Return the current (top-most) element ID without popping it.
+ * Returns ELEM_NONE if the stack is empty.
+ */
 static int
 cur_elem(struct ifxml_state *st)
 {
@@ -685,6 +766,9 @@ cur_elem(struct ifxml_state *st)
 	return ELEM_NONE;
 }
 
+/*
+ * Reset the character-data text buffer to empty.
+ */
 static void
 reset_text(struct ifxml_state *st)
 {
@@ -692,6 +776,10 @@ reset_text(struct ifxml_state *st)
 	st->text_len = 0;
 }
 
+/*
+ * Append up to 'len' characters from s to the text buffer,
+ * clipping to the remaining space.
+ */
 static void
 add_text(struct ifxml_state *st, const XML_Char *s, int len)
 {
@@ -705,12 +793,19 @@ add_text(struct ifxml_state *st, const XML_Char *s, int len)
 	}
 }
 
+/*
+ * Return the accumulated character-data text from the current element.
+ */
 static const char *
 get_text(struct ifxml_state *st)
 {
 	return st->text;
 }
 
+/*
+ * Append a single argument to the interface configuration's argv array.
+ * Exits on overflow.
+ */
 static void
 cfg_add_arg(struct ifxml_cfg *cfg, const char *arg)
 {
@@ -719,6 +814,10 @@ cfg_add_arg(struct ifxml_cfg *cfg, const char *arg)
 	cfg->argv[cfg->argc++] = __DECONST(char *, arg);
 }
 
+/*
+ * Append a key-value argument pair to the interface configuration.
+ * The value is strdup'd to ensure a stable pointer.
+ */
 static void
 cfg_add_arg_kv(struct ifxml_cfg *cfg, const char *key, const char *val)
 {
@@ -731,6 +830,9 @@ cfg_add_arg_kv(struct ifxml_cfg *cfg, const char *key, const char *val)
 	cfg_add_arg(cfg, v);
 }
 
+/*
+ * Reset an ifxml_cfg structure to its zero-initialised state.
+ */
 static void
 cfg_reset(struct ifxml_cfg *cfg)
 {
@@ -746,6 +848,10 @@ cfg_reset(struct ifxml_cfg *cfg)
 	cfg->inet6_prefixlen[0] = EMPTY;
 }
 
+/*
+ * Append 'val' to a dynamically allocated buffer, optionally preceded
+ * by 'sep' if the buffer is non-empty.  Reallocates as needed.
+ */
 static void
 buf_append(char **buf, const char *sep, const char *val)
 {
@@ -764,6 +870,9 @@ buf_append(char **buf, const char *sep, const char *val)
 	*buf = nbuf;
 }
 
+/*
+ * Free all dynamically allocated memory in the current interface state.
+ */
 static void
 ifxml_free_iface(struct ifxml_state *st)
 {
@@ -795,6 +904,10 @@ ifxml_free_iface(struct ifxml_state *st)
 	free(st->pfsync.version);
 }
 
+/*
+ * Set a dynamically allocated string pointer: free the old value and
+ * store a strdup'd copy of src.
+ */
 static void
 set_str(char **dst, const char *src)
 {
@@ -807,6 +920,10 @@ set_str(char **dst, const char *src)
 	*dst = v;
 }
 
+/*
+ * Map an interface flag name (e.g. "UP", "DEBUG") to the corresponding
+ * ifconfig command string.  Returns NULL if no mapping exists.
+ */
 static const char *
 flag_name_to_cmd(const char *name)
 {
@@ -837,6 +954,10 @@ flag_name_to_cmd(const char *name)
 	return NULL;
 }
 
+/*
+ * Map an interface capability name (e.g. "RXCSUM", "TXCSUM") to the
+ * corresponding ifconfig command string.  Returns NULL if no mapping exists.
+ */
 static const char *
 cap_name_to_cmd(const char *name)
 {
@@ -899,6 +1020,10 @@ cap_name_to_cmd(const char *name)
 	return NULL;
 }
 
+/*
+ * Map a GRE option name to its ifconfig command.  Returns NULL if
+ * no mapping exists.
+ */
 static const char *
 gre_opt_name_to_cmd(const char *name)
 {
@@ -911,6 +1036,10 @@ gre_opt_name_to_cmd(const char *name)
 	return NULL;
 }
 
+/*
+ * Map a gif(4) tunnel option name to its ifconfig command.
+ * Returns NULL if no mapping exists.
+ */
 static const char *
 gif_opt_name_to_cmd(const char *name)
 {
@@ -921,6 +1050,10 @@ gif_opt_name_to_cmd(const char *name)
 	return NULL;
 }
 
+/*
+ * Map an IPv6 flag name (e.g. "anycast", "tentative") to its ifconfig
+ * command.  Returns NULL if no mapping exists.
+ */
 static const char *
 flags6_name_to_cmd(const char *name)
 {
@@ -937,6 +1070,9 @@ flags6_name_to_cmd(const char *name)
 	return NULL;
 }
 
+/*
+ * Print the command that would be executed (used when dry-run mode is on).
+ */
 static void
 dry_run_print(const char *ifname, char **argv, int argc)
 {
@@ -946,6 +1082,11 @@ dry_run_print(const char *ifname, char **argv, int argc)
 	printf("\n");
 }
 
+/*
+ * Combine the interface arguments (cfg->argv) with any address-family
+ * arguments (af_args) and apply them to the system via ifconfig_ioctl.
+ * If iscreate is true, prepend "create".  In dry-run mode, just print.
+ */
 static void
 build_apply_argv(struct ifxml_cfg *cfg, int iscreate,
     const char *const *af_args, int af_argc, const struct afswtch *afp)
@@ -985,6 +1126,12 @@ build_apply_argv(struct ifxml_cfg *cfg, int iscreate,
 	ifconfig_ioctl(&_ctx, comboc > 0 && str_eq(combined[0], "create"), afp);
 }
 
+/*
+ * Apply a single interface configuration to the system.
+ * Determines whether the interface needs to be created first,
+ * then calls build_apply_argv for generic args and any IPv4/IPv6
+ * address-family arguments.
+ */
 static void
 apply_one_iface(struct ifxml_cfg *cfg)
 {
@@ -1051,6 +1198,10 @@ apply_one_iface(struct ifxml_cfg *cfg)
 	}
 }
 
+/*
+ * Append the current accumulated cfg to the global all_cfgs array
+ * for later application.  Reallocates the array as needed.
+ */
 static void
 flush_cfg(struct ifxml_state *st)
 {
@@ -1068,6 +1219,9 @@ flush_cfg(struct ifxml_state *st)
 	st->all_cfgs[st->cfg_count++] = st->cfg;
 }
 
+/*
+ * Apply all collected interface configurations to the system.
+ */
 static void
 apply_all_ifaces(struct ifxml_state *st)
 {
@@ -1075,6 +1229,11 @@ apply_all_ifaces(struct ifxml_state *st)
 		apply_one_iface(&st->all_cfgs[i]);
 }
 
+/*
+ * SAX-style callback for opening XML elements.  Pushes the element ID
+ * onto the stack, resets the text buffer, and initialises sub-structures
+ * when entering container elements (interface, media, address, bridge, etc.).
+ */
 static void XMLCALL
 start_elem(void *userData, const XML_Char *name, const XML_Char **atts)
 {
@@ -1151,6 +1310,12 @@ start_elem(void *userData, const XML_Char *name, const XML_Char **atts)
 	(void)atts;
 }
 
+/*
+ * SAX-style callback for closing XML elements.  Pops the element ID,
+ * reads the accumulated text, and populates the configuration structures
+ * or emits ifconfig arguments.  When the </interface> element is closed,
+ * the complete interface config is flushed to the global list.
+ */
 static void XMLCALL
 end_elem(void *userData, const XML_Char *name)
 {
@@ -1768,6 +1933,10 @@ end_elem(void *userData, const XML_Char *name)
 	}
 }
 
+/*
+ * SAX-style callback for character data inside an element.
+ * Appends the text to the state's text buffer.
+ */
 static void XMLCALL
 char_data(void *userData, const XML_Char *s, int len)
 {
@@ -1775,6 +1944,11 @@ char_data(void *userData, const XML_Char *s, int len)
 	add_text(st, s, len);
 }
 
+/*
+ * Main entry point: open and parse an XML configuration file,
+ * then apply all collected interface configurations.
+ * Returns 0 on success.
+ */
 int
 ifconfig_xml_apply(if_ctx *ctx, const char *filename)
 {
@@ -1825,6 +1999,10 @@ ifconfig_xml_apply(if_ctx *ctx, const char *filename)
 	return (0);
 }
 
+/*
+ * Option callback for the -x flag: applies the XML configuration file
+ * and exits with the current exit code.
+ */
 static void
 ifxml_cb(const char *arg)
 {
@@ -1832,6 +2010,10 @@ ifxml_cb(const char *arg)
 	exit(exit_code);
 }
 
+/*
+ * Option callback for the -N flag: enable dry-run mode (print commands
+ * without executing them).
+ */
 static void
 dryrun_cb(const char *arg __unused)
 {
@@ -1850,6 +2032,10 @@ static struct option xml_dryrun_opt = {
 	.cb = dryrun_cb,
 };
 
+/*
+ * Constructor (runs at program load-time): register the -x and -N
+ * options with the ifconfig option system.
+ */
 static __constructor void
 ifxml_ctor(void)
 {
