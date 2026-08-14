@@ -15,35 +15,11 @@
 #include "ifconfig.h"
 #include "ifconfig_xml.h"
 
-#define MAX_ARGS 256
-#define EMPTY	 '\0'
-
-static int
-null_or_empty(const char *s)
-{
-	return s == NULL || s[0] == EMPTY;
-}
-
-static int
-str_eq(const char *a, const char *b, size_t n)
-{
-	size_t la, lb;
-
-	if (n == (size_t)-1) {
-		la = strlen(a);
-		lb = strlen(b);
-		if (la != lb)
-			return 0;
-		n = la;
-	}
-	return strncmp(a, b, n) == 0;
-}
-
-static void
-concat(char *buf, size_t bufsz, const char *s)
-{
-	strlcat(buf, s, bufsz);
-}
+#define MAX_ARGS	   256
+#define MAX_STACK	   64
+#define MAX_BRIDGE_MEMBERS 256
+#define MAX_LAGG_PORTS	   64
+#define EMPTY		   '\0'
 
 int ifconfig_xml_dry_run;
 
@@ -151,8 +127,6 @@ enum {
 	ELEM_WME_TXOPLIMIT,
 };
 
-#define MAX_STACK 64
-
 struct ifxml_cfg {
 	char ifname[IFNAMSIZ];
 	bool ifname_set;
@@ -186,8 +160,6 @@ struct ifxml_bridge_member {
 	char *vlan_tagged;
 };
 
-#define MAX_BRIDGE_MEMBERS 256
-
 struct ifxml_bridge {
 	struct ifxml_bridge_member members[MAX_BRIDGE_MEMBERS];
 	int num_members;
@@ -205,8 +177,6 @@ struct ifxml_bridge {
 struct ifxml_lagg_port {
 	char name[IFNAMSIZ];
 };
-
-#define MAX_LAGG_PORTS 64
 
 struct ifxml_lagg {
 	struct ifxml_lagg_port ports[MAX_LAGG_PORTS];
@@ -295,113 +265,102 @@ static void cfg_add_arg_kv(struct ifxml_cfg *cfg, const char *key,
     const char *val);
 
 static int
+null_or_empty(const char *s)
+{
+	return s == NULL || s[0] == EMPTY;
+}
+
+static int
+str_eq(const char *a, const char *b)
+{
+	size_t la, lb;
+
+	la = strlen(a);
+	lb = strlen(b);
+
+	if (la != lb)
+		return 0;
+
+	return strncmp(a, b, la) == 0;
+}
+
+static void
+concat(char *buf, size_t bufsz, const char *s)
+{
+	strlcat(buf, s, bufsz);
+}
+
+static int
 wlan_lookup(const char *name, const char **cmd, int *is_flag)
 {
-	if (str_eq(name, "privacy", (size_t)-1)) {
+	if (str_eq(name, "privacy")) {
 		*cmd = "wepmode";
 		*is_flag = 0;
 		return 1;
 	}
-	if (str_eq(name, "roam_rssi", (size_t)-1)) {
+	if (str_eq(name, "roam_rssi")) {
 		*cmd = "roam:rssi";
 		*is_flag = 0;
 		return 1;
 	}
-	if (str_eq(name, "roam_rate", (size_t)-1)) {
+	if (str_eq(name, "roam_rate")) {
 		*cmd = "roam:rate";
 		*is_flag = 0;
 		return 1;
 	}
-	if (str_eq(name, "inactivity", (size_t)-1)) {
+	if (str_eq(name, "inactivity")) {
 		*cmd = "inact";
 		*is_flag = 1;
 		return 1;
 	}
-	if (str_eq(name, "turbo", (size_t)-1)) {
+	if (str_eq(name, "turbo")) {
 		*cmd = "dturbo";
 		*is_flag = 1;
 		return 1;
 	}
-	if (str_eq(name, "ssid", (size_t)-1) ||
-	    str_eq(name, "bssid", (size_t)-1) ||
-	    str_eq(name, "authmode", (size_t)-1) ||
-	    str_eq(name, "powersavemode", (size_t)-1) ||
-	    str_eq(name, "powersavesleep", (size_t)-1) ||
-	    str_eq(name, "deftxkey", (size_t)-1) ||
-	    str_eq(name, "rtsthreshold", (size_t)-1) ||
-	    str_eq(name, "protmode", (size_t)-1) ||
-	    str_eq(name, "txpower", (size_t)-1) ||
-	    str_eq(name, "roaming", (size_t)-1) ||
-	    str_eq(name, "dtimperiod", (size_t)-1) ||
-	    str_eq(name, "bintval", (size_t)-1) ||
-	    str_eq(name, "fragthreshold", (size_t)-1) ||
-	    str_eq(name, "bmiss", (size_t)-1) ||
-	    str_eq(name, "scanvalid", (size_t)-1) ||
-	    str_eq(name, "bgscanintvl", (size_t)-1) ||
-	    str_eq(name, "bgscanidle", (size_t)-1) ||
-	    str_eq(name, "maxretry", (size_t)-1) ||
-	    str_eq(name, "ampdulimit", (size_t)-1) ||
-	    str_eq(name, "ampdudensity", (size_t)-1) ||
-	    str_eq(name, "htprotmode", (size_t)-1) ||
-	    str_eq(name, "tdmaslot", (size_t)-1) ||
-	    str_eq(name, "tdmaslotcnt", (size_t)-1) ||
-	    str_eq(name, "tdmaslotlen", (size_t)-1) ||
-	    str_eq(name, "tdmabintval", (size_t)-1) ||
-	    str_eq(name, "meshttl", (size_t)-1) ||
-	    str_eq(name, "meshmetric", (size_t)-1) ||
-	    str_eq(name, "meshpath", (size_t)-1) ||
-	    str_eq(name, "hwmprootmode", (size_t)-1) ||
-	    str_eq(name, "hwmpmaxhops", (size_t)-1) ||
-	    str_eq(name, "regdomain", (size_t)-1) ||
-	    str_eq(name, "country", (size_t)-1) ||
-	    str_eq(name, "ucastrate", (size_t)-1) ||
-	    str_eq(name, "mcastrate", (size_t)-1) ||
-	    str_eq(name, "mgmtrate", (size_t)-1)) {
+	if (str_eq(name, "ssid") || str_eq(name, "bssid") ||
+	    str_eq(name, "authmode") || str_eq(name, "powersavemode") ||
+	    str_eq(name, "powersavesleep") || str_eq(name, "deftxkey") ||
+	    str_eq(name, "rtsthreshold") || str_eq(name, "protmode") ||
+	    str_eq(name, "txpower") || str_eq(name, "roaming") ||
+	    str_eq(name, "dtimperiod") || str_eq(name, "bintval") ||
+	    str_eq(name, "fragthreshold") || str_eq(name, "bmiss") ||
+	    str_eq(name, "scanvalid") || str_eq(name, "bgscanintvl") ||
+	    str_eq(name, "bgscanidle") || str_eq(name, "maxretry") ||
+	    str_eq(name, "ampdulimit") || str_eq(name, "ampdudensity") ||
+	    str_eq(name, "htprotmode") || str_eq(name, "tdmaslot") ||
+	    str_eq(name, "tdmaslotcnt") || str_eq(name, "tdmaslotlen") ||
+	    str_eq(name, "tdmabintval") || str_eq(name, "meshttl") ||
+	    str_eq(name, "meshmetric") || str_eq(name, "meshpath") ||
+	    str_eq(name, "hwmprootmode") || str_eq(name, "hwmpmaxhops") ||
+	    str_eq(name, "regdomain") || str_eq(name, "country") ||
+	    str_eq(name, "ucastrate") || str_eq(name, "mcastrate") ||
+	    str_eq(name, "mgmtrate")) {
 		*cmd = name;
 		*is_flag = 0;
 		return 1;
 	}
-	if (str_eq(name, "tsn", (size_t)-1) ||
-	    str_eq(name, "ecm", (size_t)-1) ||
-	    str_eq(name, "pureg", (size_t)-1) ||
-	    str_eq(name, "htcompat", (size_t)-1) ||
-	    str_eq(name, "dotd", (size_t)-1) ||
-	    str_eq(name, "dfs", (size_t)-1) ||
-	    str_eq(name, "rifs", (size_t)-1) ||
-	    str_eq(name, "uapsd", (size_t)-1) ||
-	    str_eq(name, "shortgi", (size_t)-1) ||
-	    str_eq(name, "puren", (size_t)-1) ||
-	    str_eq(name, "bgscan", (size_t)-1) ||
-	    str_eq(name, "wme", (size_t)-1) ||
-	    str_eq(name, "burst", (size_t)-1) ||
-	    str_eq(name, "ff", (size_t)-1) ||
-	    str_eq(name, "dwds", (size_t)-1) ||
-	    str_eq(name, "hidessid", (size_t)-1) ||
-	    str_eq(name, "apbridge", (size_t)-1) ||
-	    str_eq(name, "doth", (size_t)-1) ||
-	    str_eq(name, "ht", (size_t)-1) ||
-	    str_eq(name, "ht20", (size_t)-1) ||
-	    str_eq(name, "ht40", (size_t)-1) ||
-	    str_eq(name, "vht", (size_t)-1) ||
-	    str_eq(name, "vht40", (size_t)-1) ||
-	    str_eq(name, "vht80", (size_t)-1) ||
-	    str_eq(name, "vht160", (size_t)-1) ||
-	    str_eq(name, "vht80p80", (size_t)-1) ||
-	    str_eq(name, "ampdu", (size_t)-1) ||
-	    str_eq(name, "ampdutx", (size_t)-1) ||
-	    str_eq(name, "ampdurx", (size_t)-1) ||
-	    str_eq(name, "amsdu", (size_t)-1) ||
-	    str_eq(name, "amsdutx", (size_t)-1) ||
-	    str_eq(name, "amsdurx", (size_t)-1) ||
-	    str_eq(name, "stbc", (size_t)-1) ||
-	    str_eq(name, "stbctx", (size_t)-1) ||
-	    str_eq(name, "stbcrx", (size_t)-1) ||
-	    str_eq(name, "ldpc", (size_t)-1) ||
-	    str_eq(name, "ldpctx", (size_t)-1) ||
-	    str_eq(name, "ldpcrx", (size_t)-1) ||
-	    str_eq(name, "meshpeering", (size_t)-1) ||
-	    str_eq(name, "meshforward", (size_t)-1) ||
-	    str_eq(name, "meshgate", (size_t)-1)) {
+	if (str_eq(name, "tsn") || str_eq(name, "ecm") ||
+	    str_eq(name, "pureg") || str_eq(name, "htcompat") ||
+	    str_eq(name, "dotd") || str_eq(name, "dfs") ||
+	    str_eq(name, "rifs") || str_eq(name, "uapsd") ||
+	    str_eq(name, "shortgi") || str_eq(name, "puren") ||
+	    str_eq(name, "bgscan") || str_eq(name, "wme") ||
+	    str_eq(name, "burst") || str_eq(name, "ff") ||
+	    str_eq(name, "dwds") || str_eq(name, "hidessid") ||
+	    str_eq(name, "apbridge") || str_eq(name, "doth") ||
+	    str_eq(name, "ht") || str_eq(name, "ht20") ||
+	    str_eq(name, "ht40") || str_eq(name, "vht") ||
+	    str_eq(name, "vht40") || str_eq(name, "vht80") ||
+	    str_eq(name, "vht160") || str_eq(name, "vht80p80") ||
+	    str_eq(name, "ampdu") || str_eq(name, "ampdutx") ||
+	    str_eq(name, "ampdurx") || str_eq(name, "amsdu") ||
+	    str_eq(name, "amsdutx") || str_eq(name, "amsdurx") ||
+	    str_eq(name, "stbc") || str_eq(name, "stbctx") ||
+	    str_eq(name, "stbcrx") || str_eq(name, "ldpc") ||
+	    str_eq(name, "ldpctx") || str_eq(name, "ldpcrx") ||
+	    str_eq(name, "meshpeering") || str_eq(name, "meshforward") ||
+	    str_eq(name, "meshgate")) {
 		*cmd = name;
 		*is_flag = 1;
 		return 1;
@@ -415,10 +374,8 @@ wlan_elem_id(const char *name)
 	const char *cmd;
 	int is_flag;
 
-	if (str_eq(name, "chan-num", (size_t)-1) ||
-	    str_eq(name, "chan-mode", (size_t)-1) ||
-	    str_eq(name, "smps", (size_t)-1) ||
-	    str_eq(name, "location", (size_t)-1))
+	if (str_eq(name, "chan-num") || str_eq(name, "chan-mode") ||
+	    str_eq(name, "smps") || str_eq(name, "location"))
 		return ELEM_WLAN;
 	if (wlan_lookup(name, &cmd, &is_flag))
 		return ELEM_WLAN;
@@ -431,35 +388,33 @@ wlan_emit_cmd(struct ifxml_state *st, const char *name, const char *txt)
 	const char *cmd;
 	int is_flag;
 
-	if (str_eq(name, "smps", (size_t)-1)) {
-		if (str_eq(txt, "dynamic", (size_t)-1))
+	if (str_eq(name, "smps")) {
+		if (str_eq(txt, "dynamic"))
 			cfg_add_arg(&st->cfg, "smpsdyn");
-		else if (str_eq(txt, "static", (size_t)-1))
+		else if (str_eq(txt, "static"))
 			cfg_add_arg(&st->cfg, "smps");
 		return;
 	}
-	if (str_eq(name, "location", (size_t)-1)) {
-		if (str_eq(txt, "indoor", (size_t)-1) ||
-		    str_eq(txt, "outdoor", (size_t)-1) ||
-		    str_eq(txt, "anywhere", (size_t)-1))
+	if (str_eq(name, "location")) {
+		if (str_eq(txt, "indoor") || str_eq(txt, "outdoor") ||
+		    str_eq(txt, "anywhere"))
 			cfg_add_arg(&st->cfg, strdup(txt));
 		return;
 	}
-	if (str_eq(name, "chan-num", (size_t)-1)) {
+	if (str_eq(name, "chan-num")) {
 		set_str(&st->wlan_chan_num, txt);
 		return;
 	}
-	if (str_eq(name, "ssid", (size_t)-1)) {
+	if (str_eq(name, "ssid")) {
 		cfg_add_arg_kv(&st->cfg,
 		    st->wlan_bssid_seen ? "stationname" : "ssid", txt);
 		return;
 	}
-	if (str_eq(name, "authmode", (size_t)-1)) {
-		if (str_eq(txt, "802.1x", (size_t)-1))
+	if (str_eq(name, "authmode")) {
+		if (str_eq(txt, "802.1x"))
 			cfg_add_arg_kv(&st->cfg, "authmode", "8021x");
-		else if (str_eq(txt, "WPA2/802.11i", (size_t)-1) ||
-		    str_eq(txt, "WPA1+WPA2/802.11i", (size_t)-1) ||
-		    str_eq(txt, "AUTO", (size_t)-1))
+		else if (str_eq(txt, "WPA2/802.11i") ||
+		    str_eq(txt, "WPA1+WPA2/802.11i") || str_eq(txt, "AUTO"))
 			; /* not settable via authmode */
 		else
 			cfg_add_arg_kv(&st->cfg, "authmode", txt);
@@ -467,7 +422,7 @@ wlan_emit_cmd(struct ifxml_state *st, const char *name, const char *txt)
 	}
 	if (wlan_lookup(name, &cmd, &is_flag)) {
 		if (is_flag) {
-			if (str_eq(txt, "0", (size_t)-1)) {
+			if (str_eq(txt, "0")) {
 				char *neg;
 
 				if (asprintf(&neg, "-%s", cmd) == -1)
@@ -504,203 +459,203 @@ wme_emit_cmd(struct ifxml_state *st, const char *cmd, const char *val)
 static int
 elem_id(const char *name)
 {
-	if (str_eq(name, "interface", (size_t)-1))
+	if (str_eq(name, "interface"))
 		return ELEM_INTERFACE;
-	if (str_eq(name, "ifname", (size_t)-1))
+	if (str_eq(name, "ifname"))
 		return ELEM_IFNAME;
-	if (str_eq(name, "interface-flags", (size_t)-1))
+	if (str_eq(name, "interface-flags"))
 		return ELEM_IF_FLAGS;
-	if (str_eq(name, "metric", (size_t)-1))
+	if (str_eq(name, "metric"))
 		return ELEM_METRIC;
-	if (str_eq(name, "mtu", (size_t)-1))
+	if (str_eq(name, "mtu"))
 		return ELEM_MTU;
-	if (str_eq(name, "description", (size_t)-1))
+	if (str_eq(name, "description"))
 		return ELEM_DESCRIPTION;
-	if (str_eq(name, "descr", (size_t)-1))
+	if (str_eq(name, "descr"))
 		return ELEM_DESCR;
-	if (str_eq(name, "link-address", (size_t)-1))
+	if (str_eq(name, "link-address"))
 		return ELEM_LINK_ADDR_PARENT;
-	if (str_eq(name, "addr-type", (size_t)-1))
+	if (str_eq(name, "addr-type"))
 		return ELEM_ADDR_TYPE;
-	if (str_eq(name, "link-addr", (size_t)-1))
+	if (str_eq(name, "link-addr"))
 		return ELEM_LINK_ADDR_VAL;
-	if (str_eq(name, "group", (size_t)-1))
+	if (str_eq(name, "group"))
 		return ELEM_GROUP;
-	if (str_eq(name, "name", (size_t)-1))
+	if (str_eq(name, "name"))
 		return ELEM_GROUP_NAME;
-	if (str_eq(name, "media", (size_t)-1))
+	if (str_eq(name, "media"))
 		return ELEM_MEDIA;
-	if (str_eq(name, "type", (size_t)-1))
+	if (str_eq(name, "type"))
 		return ELEM_MEDIA_TYPE;
-	if (str_eq(name, "subtype", (size_t)-1))
+	if (str_eq(name, "subtype"))
 		return ELEM_MEDIA_SUBTYPE;
-	if (str_eq(name, "mode", (size_t)-1))
+	if (str_eq(name, "mode"))
 		return ELEM_MEDIA_MODE;
-	if (str_eq(name, "option", (size_t)-1))
+	if (str_eq(name, "option"))
 		return ELEM_MEDIA_OPTION;
-	if (str_eq(name, "interface-capabilities", (size_t)-1))
+	if (str_eq(name, "interface-capabilities"))
 		return ELEM_IF_CAP;
-	if (str_eq(name, "options", (size_t)-1))
+	if (str_eq(name, "options"))
 		return ELEM_OPTIONS;
-	if (str_eq(name, "fib-id", (size_t)-1))
+	if (str_eq(name, "fib-id"))
 		return ELEM_FIB;
-	if (str_eq(name, "tunnelfib-id", (size_t)-1))
+	if (str_eq(name, "tunnelfib-id"))
 		return ELEM_TUNNEL_FIB;
-	if (str_eq(name, "address", (size_t)-1))
+	if (str_eq(name, "address"))
 		return ELEM_ADDRESS_CONTAINER;
-	if (str_eq(name, "inet-addr", (size_t)-1))
+	if (str_eq(name, "inet-addr"))
 		return ELEM_INET_ADDR;
-	if (str_eq(name, "inet6-addr", (size_t)-1))
+	if (str_eq(name, "inet6-addr"))
 		return ELEM_INET6_ADDR;
-	if (str_eq(name, "dst-addr", (size_t)-1))
+	if (str_eq(name, "dst-addr"))
 		return ELEM_DST_ADDR;
-	if (str_eq(name, "netmask", (size_t)-1))
+	if (str_eq(name, "netmask"))
 		return ELEM_NETMASK;
-	if (str_eq(name, "broadcast", (size_t)-1))
+	if (str_eq(name, "broadcast"))
 		return ELEM_BROADCAST;
-	if (str_eq(name, "prefixlen", (size_t)-1))
+	if (str_eq(name, "prefixlen"))
 		return ELEM_PREFIXLEN;
-	if (str_eq(name, "bridge", (size_t)-1))
+	if (str_eq(name, "bridge"))
 		return ELEM_BRIDGE;
-	if (str_eq(name, "bridge-priority", (size_t)-1))
+	if (str_eq(name, "bridge-priority"))
 		return ELEM_BRIDGE_PRIORITY;
-	if (str_eq(name, "hellotime", (size_t)-1))
+	if (str_eq(name, "hellotime"))
 		return ELEM_HELLOTIME;
-	if (str_eq(name, "fwddelay", (size_t)-1))
+	if (str_eq(name, "fwddelay"))
 		return ELEM_FWDDELAY;
-	if (str_eq(name, "maxage", (size_t)-1))
+	if (str_eq(name, "maxage"))
 		return ELEM_MAXAGE;
-	if (str_eq(name, "holdcnt", (size_t)-1))
+	if (str_eq(name, "holdcnt"))
 		return ELEM_HOLDCNT;
-	if (str_eq(name, "stp-proto", (size_t)-1))
+	if (str_eq(name, "stp-proto"))
 		return ELEM_STP_PROTO;
-	if (str_eq(name, "maxaddr", (size_t)-1))
+	if (str_eq(name, "maxaddr"))
 		return ELEM_MAXADDR;
-	if (str_eq(name, "timeout", (size_t)-1))
+	if (str_eq(name, "timeout"))
 		return ELEM_TIMEOUT;
-	if (str_eq(name, "member", (size_t)-1))
+	if (str_eq(name, "member"))
 		return ELEM_MEMBER;
-	if (str_eq(name, "member-name", (size_t)-1))
+	if (str_eq(name, "member-name"))
 		return ELEM_MEMBER_NAME;
-	if (str_eq(name, "port-priority", (size_t)-1))
+	if (str_eq(name, "port-priority"))
 		return ELEM_PORT_PRIORITY;
-	if (str_eq(name, "path-cost", (size_t)-1))
+	if (str_eq(name, "path-cost"))
 		return ELEM_PATH_COST;
-	if (str_eq(name, "vlan-proto", (size_t)-1))
+	if (str_eq(name, "vlan-proto"))
 		return ELEM_VLAN_PROTO;
-	if (str_eq(name, "lagg-proto", (size_t)-1))
+	if (str_eq(name, "lagg-proto"))
 		return ELEM_LAGG_PROTO;
-	if (str_eq(name, "lagg-hash-l2", (size_t)-1))
+	if (str_eq(name, "lagg-hash-l2"))
 		return ELEM_LAGG_HASH_L2;
-	if (str_eq(name, "lagg-hash-l3", (size_t)-1))
+	if (str_eq(name, "lagg-hash-l3"))
 		return ELEM_LAGG_HASH_L3;
-	if (str_eq(name, "lagg-hash-l4", (size_t)-1))
+	if (str_eq(name, "lagg-hash-l4"))
 		return ELEM_LAGG_HASH_L4;
-	if (str_eq(name, "laggport", (size_t)-1))
+	if (str_eq(name, "laggport"))
 		return ELEM_LAGG_PORT;
-	if (str_eq(name, "tunnel-src", (size_t)-1))
+	if (str_eq(name, "tunnel-src"))
 		return ELEM_TUNNEL_SRC;
-	if (str_eq(name, "tunnel-dst", (size_t)-1))
+	if (str_eq(name, "tunnel-dst"))
 		return ELEM_TUNNEL_DST;
-	if (str_eq(name, "vlantag", (size_t)-1))
+	if (str_eq(name, "vlantag"))
 		return ELEM_VLAN_TAG;
-	if (str_eq(name, "vlan-protocol", (size_t)-1))
+	if (str_eq(name, "vlan-protocol"))
 		return ELEM_VLAN_PROTOCOL;
-	if (str_eq(name, "vlanpcp", (size_t)-1))
+	if (str_eq(name, "vlanpcp"))
 		return ELEM_VLAN_PCP;
-	if (str_eq(name, "parent-ifname", (size_t)-1))
+	if (str_eq(name, "parent-ifname"))
 		return ELEM_PARENT_IFNAME;
-	if (str_eq(name, "parent", (size_t)-1))
+	if (str_eq(name, "parent"))
 		return ELEM_PARENT;
-	if (str_eq(name, "vni", (size_t)-1))
+	if (str_eq(name, "vni"))
 		return ELEM_VXLAN_VNI;
-	if (str_eq(name, "local-src", (size_t)-1))
+	if (str_eq(name, "local-src"))
 		return ELEM_VXLAN_LOCAL;
-	if (str_eq(name, "local-src-port", (size_t)-1))
+	if (str_eq(name, "local-src-port"))
 		return ELEM_VXLAN_LOCAL_PORT;
-	if (str_eq(name, "peer-type", (size_t)-1))
+	if (str_eq(name, "peer-type"))
 		return ELEM_VXLAN_PEER_TYPE;
-	if (str_eq(name, "remote-dst", (size_t)-1))
+	if (str_eq(name, "remote-dst"))
 		return ELEM_VXLAN_REMOTE;
-	if (str_eq(name, "remote-dst-port", (size_t)-1))
+	if (str_eq(name, "remote-dst-port"))
 		return ELEM_VXLAN_REMOTE_PORT;
-	if (str_eq(name, "learning-status", (size_t)-1))
+	if (str_eq(name, "learning-status"))
 		return ELEM_VXLAN_LEARNING;
-	if (str_eq(name, "port-min", (size_t)-1))
+	if (str_eq(name, "port-min"))
 		return ELEM_VXLAN_PORT_MIN;
-	if (str_eq(name, "port-max", (size_t)-1))
+	if (str_eq(name, "port-max"))
 		return ELEM_VXLAN_PORT_MAX;
-	if (str_eq(name, "ttl", (size_t)-1))
+	if (str_eq(name, "ttl"))
 		return ELEM_VXLAN_TTL;
-	if (str_eq(name, "ftable-max", (size_t)-1))
+	if (str_eq(name, "ftable-max"))
 		return ELEM_VXLAN_FTABLE_MAX;
-	if (str_eq(name, "ftable-timeout", (size_t)-1))
+	if (str_eq(name, "ftable-timeout"))
 		return ELEM_VXLAN_FTABLE_TIMEOUT;
-	if (str_eq(name, "syncdev", (size_t)-1))
+	if (str_eq(name, "syncdev"))
 		return ELEM_PFSYNC_SYNCDEV;
-	if (str_eq(name, "syncpeer-str", (size_t)-1))
+	if (str_eq(name, "syncpeer-str"))
 		return ELEM_PFSYNC_SYNCPEER;
-	if (str_eq(name, "maxupdates", (size_t)-1))
+	if (str_eq(name, "maxupdates"))
 		return ELEM_PFSYNC_MAXUPDATES;
-	if (str_eq(name, "defer-status", (size_t)-1))
+	if (str_eq(name, "defer-status"))
 		return ELEM_PFSYNC_DEFER;
-	if (str_eq(name, "pfsync-version", (size_t)-1))
+	if (str_eq(name, "pfsync-version"))
 		return ELEM_PFSYNC_VERSION;
-	if (str_eq(name, "carp-state", (size_t)-1))
+	if (str_eq(name, "carp-state"))
 		return ELEM_CARP_STATE;
-	if (str_eq(name, "vhid", (size_t)-1))
+	if (str_eq(name, "vhid"))
 		return ELEM_CARP_VHID;
-	if (str_eq(name, "advbase", (size_t)-1))
+	if (str_eq(name, "advbase"))
 		return ELEM_CARP_ADVBASE;
-	if (str_eq(name, "advskew", (size_t)-1))
+	if (str_eq(name, "advskew"))
 		return ELEM_CARP_ADVSKEW;
-	if (str_eq(name, "carp_key", (size_t)-1))
+	if (str_eq(name, "carp_key"))
 		return ELEM_CARP_KEY;
-	if (str_eq(name, "carp_peer", (size_t)-1))
+	if (str_eq(name, "carp_peer"))
 		return ELEM_CARP_PEER;
-	if (str_eq(name, "carp_peer6", (size_t)-1))
+	if (str_eq(name, "carp_peer6"))
 		return ELEM_CARP_PEER6;
-	if (str_eq(name, "vrrp_state", (size_t)-1))
+	if (str_eq(name, "vrrp_state"))
 		return ELEM_VRRP_STATE;
-	if (str_eq(name, "vrid", (size_t)-1))
+	if (str_eq(name, "vrid"))
 		return ELEM_VRRP_VRID;
-	if (str_eq(name, "vrrp_prio", (size_t)-1))
+	if (str_eq(name, "vrrp_prio"))
 		return ELEM_VRRP_PRIO;
-	if (str_eq(name, "vrrp_interval", (size_t)-1))
+	if (str_eq(name, "vrrp_interval"))
 		return ELEM_VRRP_INTERVAL;
-	if (str_eq(name, "u", (size_t)-1))
+	if (str_eq(name, "u"))
 		return ELEM_GRE_KEY;
-	if (str_eq(name, "udpport", (size_t)-1))
+	if (str_eq(name, "udpport"))
 		return ELEM_GRE_UDPPORT;
-	if (str_eq(name, "flags6", (size_t)-1))
+	if (str_eq(name, "flags6"))
 		return ELEM_FLAGS6;
-	if (str_eq(name, "defuntagged", (size_t)-1))
+	if (str_eq(name, "defuntagged"))
 		return ELEM_BRIDGE_DEFUNTAGGED;
-	if (str_eq(name, "ifmaxaddr", (size_t)-1))
+	if (str_eq(name, "ifmaxaddr"))
 		return ELEM_MEMBER_IFMAXADDR;
-	if (str_eq(name, "untagged", (size_t)-1))
+	if (str_eq(name, "untagged"))
 		return ELEM_MEMBER_UNTAGGED;
-	if (str_eq(name, "vlan", (size_t)-1))
+	if (str_eq(name, "vlan"))
 		return ELEM_MEMBER_VLAN;
-	if (str_eq(name, "vlan-id", (size_t)-1))
+	if (str_eq(name, "vlan-id"))
 		return ELEM_MEMBER_VLAN_ID;
-	if (str_eq(name, "vlan-end", (size_t)-1))
+	if (str_eq(name, "vlan-end"))
 		return ELEM_MEMBER_VLAN_END;
-	if (str_eq(name, "flowid-shift", (size_t)-1))
+	if (str_eq(name, "flowid-shift"))
 		return ELEM_LAGG_FLOWID_SHIFT;
-	if (str_eq(name, "rr-limit", (size_t)-1))
+	if (str_eq(name, "rr-limit"))
 		return ELEM_LAGG_RR_LIMIT;
-	if (str_eq(name, "pcp", (size_t)-1))
+	if (str_eq(name, "pcp"))
 		return ELEM_LINK_PCP;
-	if (str_eq(name, "wme-aci", (size_t)-1))
+	if (str_eq(name, "wme-aci"))
 		return ELEM_WME_ACI;
-	if (str_eq(name, "cwmin", (size_t)-1))
+	if (str_eq(name, "cwmin"))
 		return ELEM_WME_CWMIN;
-	if (str_eq(name, "cwmax", (size_t)-1))
+	if (str_eq(name, "cwmax"))
 		return ELEM_WME_CWMAX;
-	if (str_eq(name, "aifs", (size_t)-1))
+	if (str_eq(name, "aifs"))
 		return ELEM_WME_AIFS;
-	if (str_eq(name, "txop-limit", (size_t)-1))
+	if (str_eq(name, "txop-limit"))
 		return ELEM_WME_TXOPLIMIT;
 	if (wlan_elem_id(name) != ELEM_NONE)
 		return ELEM_WLAN;
@@ -855,29 +810,29 @@ set_str(char **dst, const char *src)
 static const char *
 flag_name_to_cmd(const char *name)
 {
-	if (str_eq(name, "UP", (size_t)-1))
+	if (str_eq(name, "UP"))
 		return "up";
-	if (str_eq(name, "DEBUG", (size_t)-1))
+	if (str_eq(name, "DEBUG"))
 		return "debug";
-	if (str_eq(name, "PROMISC", (size_t)-1))
+	if (str_eq(name, "PROMISC"))
 		return "promisc";
-	if (str_eq(name, "ALLMULTI", (size_t)-1))
+	if (str_eq(name, "ALLMULTI"))
 		return "allmulti";
-	if (str_eq(name, "MONITOR", (size_t)-1))
+	if (str_eq(name, "MONITOR"))
 		return "monitor";
-	if (str_eq(name, "STATICARP", (size_t)-1))
+	if (str_eq(name, "STATICARP"))
 		return "staticarp";
-	if (str_eq(name, "STICKYARP", (size_t)-1))
+	if (str_eq(name, "STICKYARP"))
 		return "stickyarp";
-	if (str_eq(name, "LINK0", (size_t)-1))
+	if (str_eq(name, "LINK0"))
 		return "link0";
-	if (str_eq(name, "LINK1", (size_t)-1))
+	if (str_eq(name, "LINK1"))
 		return "link1";
-	if (str_eq(name, "LINK2", (size_t)-1))
+	if (str_eq(name, "LINK2"))
 		return "link2";
-	if (str_eq(name, "NOARP", (size_t)-1))
+	if (str_eq(name, "NOARP"))
 		return "arp";
-	if (str_eq(name, "PPROMISC", (size_t)-1))
+	if (str_eq(name, "PPROMISC"))
 		return "promisc";
 	return NULL;
 }
@@ -885,61 +840,61 @@ flag_name_to_cmd(const char *name)
 static const char *
 cap_name_to_cmd(const char *name)
 {
-	if (str_eq(name, "RXCSUM", (size_t)-1))
+	if (str_eq(name, "RXCSUM"))
 		return "rxcsum";
-	if (str_eq(name, "TXCSUM", (size_t)-1))
+	if (str_eq(name, "TXCSUM"))
 		return "txcsum";
-	if (str_eq(name, "RXCSUM_IPV6", (size_t)-1))
+	if (str_eq(name, "RXCSUM_IPV6"))
 		return "rxcsum6";
-	if (str_eq(name, "TXCSUM_IPV6", (size_t)-1))
+	if (str_eq(name, "TXCSUM_IPV6"))
 		return "txcsum6";
-	if (str_eq(name, "NETCONS", (size_t)-1))
+	if (str_eq(name, "NETCONS"))
 		return "netcons";
-	if (str_eq(name, "POLLING", (size_t)-1))
+	if (str_eq(name, "POLLING"))
 		return "polling";
-	if (str_eq(name, "TSO4", (size_t)-1))
+	if (str_eq(name, "TSO4"))
 		return "tso4";
-	if (str_eq(name, "TSO6", (size_t)-1))
+	if (str_eq(name, "TSO6"))
 		return "tso6";
-	if (str_eq(name, "LRO", (size_t)-1))
+	if (str_eq(name, "LRO"))
 		return "lro";
-	if (str_eq(name, "WOL_UCAST", (size_t)-1))
+	if (str_eq(name, "WOL_UCAST"))
 		return "wol_ucast";
-	if (str_eq(name, "WOL_MCAST", (size_t)-1))
+	if (str_eq(name, "WOL_MCAST"))
 		return "wol_mcast";
-	if (str_eq(name, "WOL_MAGIC", (size_t)-1))
+	if (str_eq(name, "WOL_MAGIC"))
 		return "wol_magic";
-	if (str_eq(name, "TXRTLMT", (size_t)-1))
+	if (str_eq(name, "TXRTLMT"))
 		return "txrtlmt";
-	if (str_eq(name, "HWRXTSTMP", (size_t)-1))
+	if (str_eq(name, "HWRXTSTMP"))
 		return "hwrxtstmp";
-	if (str_eq(name, "MEXTPG", (size_t)-1))
+	if (str_eq(name, "MEXTPG"))
 		return "mextpg";
-	if (str_eq(name, "VLAN_MTU", (size_t)-1))
+	if (str_eq(name, "VLAN_MTU"))
 		return "vlanmtu";
-	if (str_eq(name, "VLAN_HWTAGGING", (size_t)-1))
+	if (str_eq(name, "VLAN_HWTAGGING"))
 		return "vlanhwtag";
-	if (str_eq(name, "VLAN_HWFILTER", (size_t)-1))
+	if (str_eq(name, "VLAN_HWFILTER"))
 		return "vlanhwfilter";
-	if (str_eq(name, "VLAN_HWTSO", (size_t)-1))
+	if (str_eq(name, "VLAN_HWTSO"))
 		return "vlanhwtso";
-	if (str_eq(name, "VLAN_HWCSUM", (size_t)-1))
+	if (str_eq(name, "VLAN_HWCSUM"))
 		return "vlanhwcsum";
-	if (str_eq(name, "TXTLS4", (size_t)-1))
+	if (str_eq(name, "TXTLS4"))
 		return "txtls";
-	if (str_eq(name, "TXTLS6", (size_t)-1))
+	if (str_eq(name, "TXTLS6"))
 		return "txtls";
-	if (str_eq(name, "TXTLS_RTLMT", (size_t)-1))
+	if (str_eq(name, "TXTLS_RTLMT"))
 		return "txtlsrtlmt";
-	if (str_eq(name, "RXTLS4", (size_t)-1))
+	if (str_eq(name, "RXTLS4"))
 		return "rxtls";
-	if (str_eq(name, "RXTLS6", (size_t)-1))
+	if (str_eq(name, "RXTLS6"))
 		return "rxtls";
-	if (str_eq(name, "IPSEC", (size_t)-1))
+	if (str_eq(name, "IPSEC"))
 		return "ipsec";
-	if (str_eq(name, "TOE4", (size_t)-1))
+	if (str_eq(name, "TOE4"))
 		return "toe";
-	if (str_eq(name, "TOE6", (size_t)-1))
+	if (str_eq(name, "TOE6"))
 		return "toe";
 	return NULL;
 }
@@ -947,11 +902,11 @@ cap_name_to_cmd(const char *name)
 static const char *
 gre_opt_name_to_cmd(const char *name)
 {
-	if (str_eq(name, "ENABLE_CSUM", (size_t)-1))
+	if (str_eq(name, "ENABLE_CSUM"))
 		return "enable_csum";
-	if (str_eq(name, "ENABLE_SEQ", (size_t)-1))
+	if (str_eq(name, "ENABLE_SEQ"))
 		return "enable_seq";
-	if (str_eq(name, "UDPENCAP", (size_t)-1))
+	if (str_eq(name, "UDPENCAP"))
 		return "udpencap";
 	return NULL;
 }
@@ -959,9 +914,9 @@ gre_opt_name_to_cmd(const char *name)
 static const char *
 gif_opt_name_to_cmd(const char *name)
 {
-	if (str_eq(name, "NOCLAMP", (size_t)-1))
+	if (str_eq(name, "NOCLAMP"))
 		return "noclamp";
-	if (str_eq(name, "IGNORE_SOURCE", (size_t)-1))
+	if (str_eq(name, "IGNORE_SOURCE"))
 		return "ignore_source";
 	return NULL;
 }
@@ -969,15 +924,15 @@ gif_opt_name_to_cmd(const char *name)
 static const char *
 flags6_name_to_cmd(const char *name)
 {
-	if (str_eq(name, "anycast", (size_t)-1))
+	if (str_eq(name, "anycast"))
 		return "anycast";
-	if (str_eq(name, "tentative", (size_t)-1))
+	if (str_eq(name, "tentative"))
 		return "tentative";
-	if (str_eq(name, "deprecated", (size_t)-1))
+	if (str_eq(name, "deprecated"))
 		return "deprecated";
-	if (str_eq(name, "autoconf", (size_t)-1))
+	if (str_eq(name, "autoconf"))
 		return "autoconf";
-	if (str_eq(name, "prefer_source", (size_t)-1))
+	if (str_eq(name, "prefer_source"))
 		return "prefer_source";
 	return NULL;
 }
@@ -1027,8 +982,7 @@ build_apply_argv(struct ifxml_cfg *cfg, int iscreate,
 	_ctx.io_ss = NULL;
 
 	ifmaybeload(&_args, cfg->ifname);
-	ifconfig_ioctl(&_ctx,
-	    comboc > 0 && str_eq(combined[0], "create", (size_t)-1), afp);
+	ifconfig_ioctl(&_ctx, comboc > 0 && str_eq(combined[0], "create"), afp);
 }
 
 static void
@@ -1046,7 +1000,7 @@ apply_one_iface(struct ifxml_cfg *cfg)
 
 	if (need_create) {
 		const char *p = cfg->ifname;
-		if (str_eq(p, "epair", 5)) {
+		if (strncmp(p, "epair", 5)) {
 			p += 5;
 			while (*p >= '0' && *p <= '9')
 				p++;
@@ -1253,7 +1207,7 @@ end_elem(void *userData, const XML_Char *name)
 		strlcpy(st->link_addr, txt, sizeof(st->link_addr));
 		parent = cur_elem(st);
 		if (parent == ELEM_LINK_ADDR_PARENT &&
-		    str_eq(st->addr_type, "ether", (size_t)-1) &&
+		    str_eq(st->addr_type, "ether") &&
 		    !null_or_empty(st->link_addr)) {
 			cfg_add_arg(&st->cfg, "ether");
 			cfg_add_arg(&st->cfg, strdup(st->link_addr));
@@ -1467,8 +1421,8 @@ end_elem(void *userData, const XML_Char *name)
 				cfg_add_arg(&st->cfg, strdup(m->vlan_tagged));
 			}
 			if (!null_or_empty(m->vlan_proto) &&
-			    (str_eq(m->vlan_proto, "802.1q", (size_t)-1) ||
-				str_eq(m->vlan_proto, "802.1ad", (size_t)-1))) {
+			    (str_eq(m->vlan_proto, "802.1q") ||
+				str_eq(m->vlan_proto, "802.1ad"))) {
 				cfg_add_arg(&st->cfg, "ifvlanproto");
 				cfg_add_arg(&st->cfg, strdup(m->name));
 				cfg_add_arg(&st->cfg, strdup(m->vlan_proto));
@@ -1527,7 +1481,7 @@ end_elem(void *userData, const XML_Char *name)
 		break;
 	case ELEM_VXLAN_LEARNING:
 		st->vxlan.learning_seen = 1;
-		st->vxlan.learning_on = !str_eq(txt, "no", (size_t)-1);
+		st->vxlan.learning_on = !str_eq(txt, "no");
 		break;
 	case ELEM_VXLAN_PORT_MIN:
 		if (!null_or_empty(txt))
@@ -1563,7 +1517,7 @@ end_elem(void *userData, const XML_Char *name)
 		break;
 	case ELEM_PFSYNC_DEFER:
 		st->pfsync.defer_seen = 1;
-		st->pfsync.defer_on = str_eq(txt, "on", (size_t)-1);
+		st->pfsync.defer_on = str_eq(txt, "on");
 		break;
 	case ELEM_PFSYNC_VERSION:
 		if (!null_or_empty(txt))
@@ -1674,7 +1628,7 @@ end_elem(void *userData, const XML_Char *name)
 		break;
 	case ELEM_WLAN:
 		if (!null_or_empty(txt)) {
-			if (str_eq(name, "bssid", (size_t)-1))
+			if (str_eq(name, "bssid"))
 				st->wlan_bssid_seen = 1;
 			wlan_emit_cmd(st, name, txt);
 		}
@@ -1764,7 +1718,7 @@ end_elem(void *userData, const XML_Char *name)
 			    st->vxlan.local_port);
 		if (!null_or_empty(st->vxlan.remote)) {
 			if (!null_or_empty(st->vxlan.peer_type) &&
-			    str_eq(st->vxlan.peer_type, "group", (size_t)-1))
+			    str_eq(st->vxlan.peer_type, "group"))
 				cfg_add_arg_kv(&st->cfg, "vxlangroup",
 				    st->vxlan.remote);
 			else
