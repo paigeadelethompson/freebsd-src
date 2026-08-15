@@ -43,6 +43,7 @@
 #include <unistd.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 typedef enum {
 	MT_PREFIX,
@@ -56,16 +57,16 @@ list_cloners(void)
 	size_t cloners_count;
 
 	if (ifconfig_list_cloners(lifh, &cloners, &cloners_count) < 0)
-		errc(1, ifconfig_err_errno(lifh), "unable to list cloners");
+		if_errc(1, ifconfig_err_errno(lifh), "unable to list cloners");
 
 	for (const char *name = cloners;
 	    name < cloners + cloners_count * IFNAMSIZ;
 	    name += IFNAMSIZ) {
 		if (name > cloners)
-			putchar(' ');
-		printf("%s", name);
+			ifconfig_print_space();
+		ifclone_print_cloners(name);
 	}
-	putchar('\n');
+	ifconfig_print_newline();
 	free(cloners);
 }
 
@@ -122,12 +123,12 @@ ifclonecreate(if_ctx *ctx, void *arg __unused)
 	/* Warning to be removed in FreeBSD 17.0 */
 	if (sscanf(ctx->ifname, "ipfw%u", &u) == 1 ||
 	    sscanf(ctx->ifname, "ipfwlog%u", &u) == 1) {
-		warnx("ipfw(4) logging does not need interface creation "
+		if_warnx("ipfw(4) logging does not need interface creation "
 		     "in FreeBSD 16.0");
 		return;
 	}
 	if (sscanf(ctx->ifname, "pflog%u", &u) == 1) {
-		warnx("pflog(4) logging does not need interface creation "
+		if_warnx("pflog(4) logging does not need interface creation "
 		     "in FreeBSD 16.0");
 		return;
 	}
@@ -171,7 +172,7 @@ clone_destroy(if_ctx *ctx, const char *cmd __unused, int d __unused)
 	struct ifreq ifr = {};
 
 	if (ioctl_ctx_ifr(ctx, SIOCIFDESTROY, &ifr) < 0)
-		err(1, "SIOCIFDESTROY");
+		if_err(1, "SIOCIFDESTROY");
 }
 
 static struct cmd clone_cmds[] = {

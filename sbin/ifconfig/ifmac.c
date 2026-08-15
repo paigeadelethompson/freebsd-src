@@ -48,6 +48,7 @@
 #include <string.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static void
 maclabel_status(if_ctx *ctx)
@@ -70,7 +71,7 @@ maclabel_status(if_ctx *ctx)
 		goto mac_free;
 
 	if (strlen(label_text) != 0)
-		printf("\tmaclabel %s\n", label_text);
+		ifmac_print_maclabel(label_text);
 	free(label_text);
 
 mac_free:

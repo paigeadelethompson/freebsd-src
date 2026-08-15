@@ -35,7 +35,7 @@ SRCS+=	ifgif.c			# GIF reversed header workaround
 SRCS+=	ifipsec.c		# IPsec VTI
 
 SRCS+=	sfp.c			# SFP/SFP+ information
-LIBADD+=	ifconfig m util
+LIBADD+=	ifconfig m util xo
 CFLAGS+=	-I${SRCTOP}/lib/libifconfig -I${OBJTOP}/lib/libifconfig
 
 .if ${MK_WIRELESS_SUPPORT} != "no"
@@ -51,6 +51,8 @@ SRCS+=	ifpfsync.c		# pfsync(4) support
 
 SRCS+=	ifbridge.c		# bridge support
 SRCS+=	iflagg.c		# lagg support
+
+SRCS+=  ifconfig_output.c       # Console/print support
 
 .if ${MK_INET6_SUPPORT} != "no"
 CFLAGS+= -DINET6

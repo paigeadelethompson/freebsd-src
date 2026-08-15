@@ -44,12 +44,11 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <libutil.h>
-
 #include <libifconfig.h>
 #include <libifconfig_sfp.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 void
 sfp_status(if_ctx *ctx)
@@ -66,45 +65,37 @@ sfp_status(if_ctx *ctx)
 
 	ifconfig_sfp_get_sfp_info_strings(&info, &strings);
 
-	printf("\tplugged: %s %s (%s)\n",
-	    ifconfig_sfp_id_display(info.sfp_id),
-	    ifconfig_sfp_physical_spec(&info, &strings),
-	    strings.sfp_conn);
+	sfp_print_plugged(&info, &strings);
 
 	if (ifconfig_sfp_get_sfp_vendor_info(lifh, ctx->ifname, &vendor_info) == -1)
 		return;
 
-	printf("\tvendor: %s PN: %s SN: %s DATE: %s\n",
-	    vendor_info.name, vendor_info.pn, vendor_info.sn, vendor_info.date);
+	sfp_print_vendor(&vendor_info);
 
 	if (ifconfig_sfp_id_is_cmis(info.sfp_id)) {
 		/* CMIS: no legacy compliance info to show */
 	} else if (ifconfig_sfp_id_is_qsfp(info.sfp_id)) {
 		if (verbose > 1)
-			printf("\tcompliance level: %s\n", strings.sfp_rev);
+			sfp_print_verbose_compliance(&strings);
 	} else {
 		if (verbose > 5) {
-			printf("Class: %s\n",
-			    ifconfig_sfp_physical_spec(&info, &strings));
-			printf("Length: %s\n", strings.sfp_fc_len);
-			printf("Tech: %s\n", strings.sfp_cab_tech);
-			printf("Media: %s\n", strings.sfp_fc_media);
-			printf("Speed: %s\n", strings.sfp_fc_speed);
+			sfp_print_verbose_class(&info, &strings);
+			sfp_print_verbose_length(&strings);
+			sfp_print_verbose_tech(&strings);
+			sfp_print_verbose_media(&strings);
+			sfp_print_verbose_speed(&strings);
 		}
 	}
 
 	if (ifconfig_sfp_get_sfp_status(lifh, ctx->ifname, &status) == 0) {
 		if (ifconfig_sfp_id_is_qsfp(info.sfp_id) && verbose > 1)
-			printf("\tnominal bitrate: %u Mbps\n", status.bitrate);
-		printf("\tmodule temperature: %.2f C voltage: %.2f Volts\n",
-		    status.temp, status.voltage);
+			sfp_print_verbose_nombitrate(&status);
+		sfp_print_verbose_voltage(&status);
 		channel_count = ifconfig_sfp_channel_count(&info);
 		for (size_t chan = 0; chan < channel_count; ++chan) {
 			uint16_t rx = status.channel[chan].rx;
 			uint16_t tx = status.channel[chan].tx;
-			printf("\tlane %zu: "
-			    "RX power: %.2f mW (%.2f dBm) TX bias: %.2f mA\n",
-			    chan + 1, power_mW(rx), power_dBm(rx), bias_mA(tx));
+			sfp_print_verbose_rxpower(chan, rx, tx);
 		}
 		ifconfig_sfp_free_sfp_status(&status);
 	}
@@ -116,26 +107,17 @@ sfp_status(if_ctx *ctx)
 			return;
 
 		if (ifconfig_sfp_id_is_cmis(info.sfp_id)) {
-			printf("\n\tCMIS DUMP (Lower Memory 0..127):\n");
-			hexdump(dump.data, 128,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
-			printf("\n\tCMIS DUMP (Page 00h 128..255):\n");
-			hexdump(dump.data + 128, 128,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
-			printf("\n\tCMIS DUMP (Page 11h 128..255):\n");
-			hexdump(dump.data + CMIS_DUMP_P11, 128,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
+			sfp_print_verbose_cmis_dump1(dump.data, 128);
+			sfp_print_verbose_cmis_dump2(dump.data + 128, 128);
+			sfp_print_verbose_cmis_dump3(dump.data + CMIS_DUMP_P11,
+			    128);
 		} else if (ifconfig_sfp_id_is_qsfp(info.sfp_id)) {
-			printf("\n\tSFF8436 DUMP (0xA0 128..255 range):\n");
-			hexdump(dump.data + QSFP_DUMP1_START, QSFP_DUMP1_SIZE,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
-			printf("\n\tSFF8436 DUMP (0xA0 0..81 range):\n");
-			hexdump(dump.data + QSFP_DUMP0_START, QSFP_DUMP0_SIZE,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
+			sfp_print_verbose_sff8436_dump1(
+			    dump.data + QSFP_DUMP1_START, QSFP_DUMP1_SIZE);
+			sfp_print_verbose_sff8436_dump2(
+			    dump.data + QSFP_DUMP0_START, QSFP_DUMP0_SIZE);
 		} else {
-			printf("\n\tSFF8472 DUMP (0xA0 0..127 range):\n");
-			hexdump(dump.data + SFP_DUMP_START, SFP_DUMP_SIZE,
-			    "\t", HD_OMIT_COUNT | HD_OMIT_CHARS);
+			sfp_print_verbose_sff8472_dump1(dump.data);
 		}
 	}
 }

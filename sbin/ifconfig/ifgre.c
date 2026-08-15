@@ -40,6 +40,7 @@
 #include <err.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static const char *GREBITS[] = {
 	[0] = "ENABLE_CSUM",
@@ -55,7 +56,7 @@ gre_status(if_ctx *ctx)
 
 	if (ioctl_ctx_ifr(ctx, GREGKEY, &ifr) == 0)
 		if (opts != 0)
-			printf("\tgrekey: 0x%x (%u)\n", opts, opts);
+			ifgre_print_key(opts);
 	opts = 0;
 	if (ioctl_ctx_ifr(ctx, GREGOPTS, &ifr) != 0 || opts == 0)
 		return;
@@ -63,10 +64,11 @@ gre_status(if_ctx *ctx)
 	port = 0;
 	ifr.ifr_data = (caddr_t)&port;
 	if (ioctl_ctx_ifr(ctx, GREGPORT, &ifr) == 0 && port != 0)
-		printf("\tudpport: %u\n", port);
-	printf("\toptions=%x", opts);
-	print_bits("options", &opts, 1, GREBITS, nitems(GREBITS));
-	putchar('\n');
+		ifgre_print_udpport(port);
+	ifgre_print_options(opts);
+	ifconfig_print_bits("options", "option", &opts, 1, GREBITS,
+	    nitems(GREBITS));
+	ifconfig_print_newline();
 }
 
 static void
@@ -77,7 +79,7 @@ setifgrekey(if_ctx *ctx, const char *val, int dummy __unused)
 
 	ifr.ifr_data = (caddr_t)&grekey;
 	if (ioctl_ctx_ifr(ctx, GRESKEY, &ifr) < 0)
-		warn("ioctl (set grekey)");
+		if_warn("ioctl (set grekey)");
 }
 
 static void
@@ -87,7 +89,7 @@ setifgreport(if_ctx *ctx, const char *val, int dummy __unused)
 	struct ifreq ifr = { .ifr_data = (caddr_t)&udpport };
 
 	if (ioctl_ctx_ifr(ctx, GRESPORT, &ifr) < 0)
-		warn("ioctl (set udpport)");
+		if_warn("ioctl (set udpport)");
 }
 
 static void
@@ -97,7 +99,7 @@ setifgreopts(if_ctx *ctx, const char *val __unused, int d)
 	struct ifreq ifr = { .ifr_data = (caddr_t)&opts };
 
 	if (ioctl_ctx_ifr(ctx, GREGOPTS, &ifr) == -1) {
-		warn("ioctl(GREGOPTS)");
+		if_warn("ioctl(GREGOPTS)");
 		return;
 	}
 
@@ -107,7 +109,7 @@ setifgreopts(if_ctx *ctx, const char *val __unused, int d)
 		opts |= d;
 
 	if (ioctl_ctx(ctx, GRESOPTS, &ifr) == -1) {
-		warn("ioctl(GIFSOPTS)");
+		if_warn("ioctl(GIFSOPTS)");
 		return;
 	}
 }

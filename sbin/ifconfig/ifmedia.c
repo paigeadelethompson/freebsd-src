@@ -88,13 +88,12 @@
 #include <libifconfig.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static void domediaopt(if_ctx *, const char *, bool);
 static ifmedia_t get_media_subtype(ifmedia_t, const char *);
 static ifmedia_t get_media_mode(ifmedia_t, const char *);
 static ifmedia_t get_media_options(ifmedia_t, const char *);
-static void print_media(ifmedia_t, bool);
-static void print_media_ifconfig(ifmedia_t);
 
 static void
 media_status(if_ctx *ctx)
@@ -105,50 +104,50 @@ media_status(if_ctx *ctx)
 		return;
 
 	if (ifmr->ifm_count == 0) {
-		warnx("%s: no media types?", ctx->ifname);
+		if_warnx("%s: no media types?", ctx->ifname);
 		goto free;
 	}
 
-	printf("\tmedia: ");
-	print_media(ifmr->ifm_current, true);
+	ifmedia_print_media_header();
+	ifmedia_print_media(ifmr->ifm_current, true);
 	if (ifmr->ifm_active != ifmr->ifm_current) {
-		putchar(' ');
-		putchar('(');
-		print_media(ifmr->ifm_active, false);
-		putchar(')');
+		ifconfig_print_space();
+		ifconfig_print_char('(');
+		ifmedia_print_media(ifmr->ifm_active, false);
+		ifconfig_print_char(')');
 	}
 
-	putchar('\n');
+	ifconfig_print_newline();
 
 	if (ifmr->ifm_status & IFM_AVALID) {
 		struct ifdownreason ifdr;
 		const char *status;
 
 		status = ifconfig_media_get_status(ifmr);
-		printf("\tstatus: %s", status);
+		ifmedia_print_status(status);
 		if (strcmp(status, "no carrier") == 0 &&
 		    ifconfig_media_get_downreason(lifh, ctx->ifname, &ifdr) == 0) {
 			switch (ifdr.ifdr_reason) {
 			case IFDR_REASON_MSG:
-				printf(" (%s)", ifdr.ifdr_msg);
+				ifmedia_print_reason(&ifdr);
 				break;
 			case IFDR_REASON_VENDOR:
-				printf(" (vendor code %d)",
-				    ifdr.ifdr_vendor);
+				ifmedia_print_reason_vendor(&ifdr);
 				break;
 			default:
 				break;
 			}
 		}
-		putchar('\n');
+		ifconfig_print_newline();
 	}
 
 	if (ctx->args->supmedia) {
-		printf("\tsupported media:\n");
+		ifmedia_print_supmedia();
 		for (int i = 0; i < ifmr->ifm_count; ++i) {
-			printf("\t\t");
-			print_media_ifconfig(ifmr->ifm_ulist[i]);
-			putchar('\n');
+			ifconfig_print_tab();
+			ifconfig_print_tab();
+			ifmedia_print_media_ifconfig(ifmr->ifm_ulist[i]);
+			ifconfig_print_newline();
 		}
 	}
 free:
@@ -164,11 +163,11 @@ ifmedia_getstate(if_ctx *ctx)
 		return (ifmr);
 
 	if (ifconfig_media_get_mediareq(lifh, ctx->ifname, &ifmr) == -1)
-		errc(1, ifconfig_err_errno(lifh),
+		if_errc(1, ifconfig_err_errno(lifh),
 		    "%s: ifconfig_media_get_mediareq", ctx->ifname);
 
 	if (ifmr->ifm_count == 0)
-		errx(1, "%s: no media types?", ctx->ifname);
+		if_errx(1, "%s: no media types?", ctx->ifname);
 
 	return (ifmr);
 }
@@ -183,7 +182,7 @@ setifmediacallback(if_ctx *ctx, void *arg)
 	if (!did_it) {
 		ifr.ifr_media = ifmr->ifm_current;
 		if (ioctl_ctx_ifr(ctx, SIOCSIFMEDIA, &ifr) < 0)
-			err(1, "SIOCSIFMEDIA (media)");
+			if_err(1, "SIOCSIFMEDIA (media)");
 		free(ifmr);
 		did_it = true;
 	}
@@ -260,7 +259,7 @@ setmediainst(if_ctx *ctx, const char *val, int d __unused)
 
 	inst = atoi(val);
 	if (inst < 0 || inst > (int)IFM_INST_MAX)
-		errx(1, "invalid media instance: %s", val);
+		if_errx(1, "invalid media instance: %s", val);
 
 	ifmr->ifm_current = (ifmr->ifm_current & ~IFM_IMASK) | inst << IFM_ISHIFT;
 
@@ -292,11 +291,11 @@ get_media_subtype(ifmedia_t media, const char *val)
 		return (subtype);
 	switch (errno) {
 	case EINVAL:
-		errx(EXIT_FAILURE, "unknown media type 0x%x", media);
+		if_errx(EXIT_FAILURE, "unknown media type 0x%x", media);
 	case ENOENT:
-		errx(EXIT_FAILURE, "unknown media subtype: %s", val);
+		if_errx(EXIT_FAILURE, "unknown media subtype: %s", val);
 	default:
-		err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
+		if_err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
 	}
 	/*NOTREACHED*/
 }
@@ -311,11 +310,11 @@ get_media_mode(ifmedia_t media, const char *val)
 		return (mode);
 	switch (errno) {
 	case EINVAL:
-		errx(EXIT_FAILURE, "unknown media type 0x%x", media);
+		if_errx(EXIT_FAILURE, "unknown media type 0x%x", media);
 	case ENOENT:
 		return (INVALID_IFMEDIA);
 	default:
-		err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
+		if_err(EXIT_FAILURE, "ifconfig_media_lookup_subtype");
 	}
 	/*NOTREACHED*/
 }
@@ -334,7 +333,7 @@ get_media_options(ifmedia_t media, const char *val)
 	 */
 	opts = strdup(val);
 	if (opts == NULL)
-		err(EXIT_FAILURE, "strdup");
+		if_err(EXIT_FAILURE, "strdup");
 
 	/*
 	 * Split the comma-delimited list into separate strings.
@@ -348,7 +347,7 @@ get_media_options(ifmedia_t media, const char *val)
 	}
 	optnames = calloc(nopts, sizeof(*optnames));
 	if (optnames == NULL)
-		err(EXIT_FAILURE, "calloc");
+		if_err(EXIT_FAILURE, "calloc");
 	opt = opts;
 	for (size_t i = 0; i < nopts; ++i) {
 		optnames[i] = opt;
@@ -360,100 +359,17 @@ get_media_options(ifmedia_t media, const char *val)
 	 */
 	options = ifconfig_media_lookup_options(media, optnames, nopts);
 	if (options == NULL)
-		err(EXIT_FAILURE, "ifconfig_media_lookup_options");
+		if_err(EXIT_FAILURE, "ifconfig_media_lookup_options");
 	rval = 0;
 	for (size_t i = 0; i < nopts; ++i) {
 		if (options[i] == INVALID_IFMEDIA)
-			errx(EXIT_FAILURE, "unknown option: %s", optnames[i]);
+			if_errx(EXIT_FAILURE, "unknown option: %s", optnames[i]);
 		rval |= options[i];
 	}
 	free(options);
 	free(optnames);
 	free(opts);
 	return (rval);
-}
-
-static void
-print_media(ifmedia_t media, bool print_toptype)
-{
-	const char *val, **options;
-
-	val = ifconfig_media_get_type(media);
-	if (val == NULL) {
-		printf("<unknown type>");
-		return;
-	} else if (print_toptype) {
-		printf("%s", val);
-	}
-
-	val = ifconfig_media_get_subtype(media);
-	if (val == NULL) {
-		printf("<unknown subtype>");
-		return;
-	}
-
-	if (print_toptype)
-		putchar(' ');
-
-	printf("%s", val);
-
-	if (print_toptype) {
-		val = ifconfig_media_get_mode(media);
-		if (val != NULL && strcasecmp("autoselect", val) != 0)
-			printf(" mode %s", val);
-	}
-
-	options = ifconfig_media_get_options(media);
-	if (options != NULL && options[0] != NULL) {
-		printf(" <%s", options[0]);
-		for (size_t i = 1; options[i] != NULL; ++i)
-			printf(",%s", options[i]);
-		printf(">");
-	}
-	free(options);
-
-	if (print_toptype && IFM_INST(media) != 0)
-		printf(" instance %d", IFM_INST(media));
-}
-
-static void
-print_media_ifconfig(ifmedia_t media)
-{
-	const char *val, **options;
-
-	val = ifconfig_media_get_type(media);
-	if (val == NULL) {
-		printf("<unknown type>");
-		return;
-	}
-
-	/*
-	 * Don't print the top-level type; it's not like we can
-	 * change it, or anything.
-	 */
-
-	val = ifconfig_media_get_subtype(media);
-	if (val == NULL) {
-		printf("<unknown subtype>");
-		return;
-	}
-
-	printf("media %s", val);
-
-	val = ifconfig_media_get_mode(media);
-	if (val != NULL)
-		printf(" mode %s", val);
-
-	options = ifconfig_media_get_options(media);
-	if (options != NULL && options[0] != NULL) {
-		printf(" mediaopt %s", options[0]);
-		for (size_t i = 1; options[i] != NULL; ++i)
-			printf(",%s", options[i]);
-	}
-	free(options);
-
-	if (IFM_INST(media) != 0)
-		printf(" instance %d", IFM_INST(media));
 }
 
 /**********************************************************************

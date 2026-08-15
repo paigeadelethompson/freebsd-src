@@ -56,6 +56,7 @@
 #include <libifconfig.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static const char *carp_states[] = { CARP_STATES };
 
@@ -84,24 +85,21 @@ carp_status(if_ctx *ctx)
 	for (size_t i = 0; i < carpr[0].carpr_count; i++) {
 		switch (carpr[i].carpr_version) {
 		case CARP_VERSION_CARP:
-			printf("\tcarp: %s vhid %d advbase %d advskew %d",
-			    carp_states[carpr[i].carpr_state], carpr[i].carpr_vhid,
-			    carpr[i].carpr_advbase, carpr[i].carpr_advskew);
+			carp_print_summary(carp_states[carpr[i].carpr_state],
+			    &carpr[i]);
 			if (ctx->args->printkeys && carpr[i].carpr_key[0] != '\0')
-				printf(" key \"%s\"\n", carpr[i].carpr_key);
+				carp_print_key(&carpr[i]);
 			else
-				printf("\n");
+				ifconfig_print_newline();
 
 			inet_ntop(AF_INET6, &carpr[i].carpr_addr6, addr_buf,
 			    sizeof(addr_buf));
 
-			printf("\t      peer %s peer6 %s\n",
-			    inet_ntoa(carpr[i].carpr_addr), addr_buf);
+			carp_print_peer(&carpr[i], addr_buf);
 			break;
 		case CARP_VERSION_VRRPv3:
-			printf("\tvrrp: %s vrid %d prio %d interval %d\n",
-			    carp_states[carpr[i].carpr_state], carpr[i].carpr_vhid,
-			    carpr[i].carpr_vrrp_prio, carpr[i].carpr_vrrp_adv_inter);
+			carp_print_vrrp3(carp_states[carpr[i].carpr_state],
+			    &carpr[i]);
 			break;
 		}
 	}
@@ -115,11 +113,11 @@ setcarp_vhid(if_ctx *ctx, const char *val, int dummy __unused)
 	carpr_vhid = atoi(val);
 
 	if (carpr_vhid <= 0 || carpr_vhid > CARP_MAXVHID)
-		errx(1, "vhid must be greater than 0 and less than %u",
+		if_errx(1, "vhid must be greater than 0 and less than %u",
 		    CARP_MAXVHID);
 
 	if (afp->af_setvhid == NULL)
-		errx(1, "%s doesn't support carp(4)", afp->af_name);
+		if_errx(1, "%s doesn't support carp(4)", afp->af_name);
 	afp->af_setvhid(carpr_vhid);
 	callback_register(setcarp_callback, NULL);
 }
@@ -158,10 +156,10 @@ setcarp_callback(if_ctx *ctx, void *arg __unused)
 
 	if (ifconfig_carp_set_info(lifh, ctx->ifname, &carpr)) {
 		if (ifconfig_err_errtype(lifh) == OTHER)
-			err(1, "%s: %s", __func__,
+			if_err(1, "%s: %s", __func__,
 			    strerror(ifconfig_err_errno(lifh)));
 		else
-			err(1, "%s: %d", __func__, ifconfig_err_errtype(lifh));
+			if_err(1, "%s: %d", __func__, ifconfig_err_errtype(lifh));
 	}
 }
 
@@ -170,7 +168,7 @@ setcarp_passwd(if_ctx *ctx __unused, const char *val, int dummy __unused)
 {
 
 	if (carpr_vhid == -1)
-		errx(1, "passwd requires vhid");
+		if_errx(1, "passwd requires vhid");
 
 	carpr_key = val;
 }
@@ -180,7 +178,7 @@ setcarp_advskew(if_ctx *ctx __unused, const char *val, int dummy __unused)
 {
 
 	if (carpr_vhid == -1)
-		errx(1, "advskew requires vhid");
+		if_errx(1, "advskew requires vhid");
 
 	carpr_advskew = atoi(val);
 }
@@ -190,7 +188,7 @@ setcarp_advbase(if_ctx *ctx __unused, const char *val, int dummy __unused)
 {
 
 	if (carpr_vhid == -1)
-		errx(1, "advbase requires vhid");
+		if_errx(1, "advbase requires vhid");
 
 	carpr_advbase = atoi(val);
 }
@@ -201,7 +199,7 @@ setcarp_state(if_ctx *ctx __unused, const char *val, int dummy __unused)
 	int i;
 
 	if (carpr_vhid == -1)
-		errx(1, "state requires vhid");
+		if_errx(1, "state requires vhid");
 
 	for (i = 0; i <= CARP_MAXSTATE; i++)
 		if (strcasecmp(carp_states[i], val) == 0) {
@@ -209,7 +207,7 @@ setcarp_state(if_ctx *ctx __unused, const char *val, int dummy __unused)
 			return;
 		}
 
-	errx(1, "unknown state");
+	if_errx(1, "unknown state");
 }
 
 static void
@@ -234,7 +232,7 @@ setcarp_peer6(if_ctx *ctx __unused, const char *val, int dummy __unused)
 	hints.ai_flags = AI_NUMERICHOST;
 
 	if (getaddrinfo(val, NULL, &hints, &res) != 0)
-		errx(1, "Invalid IPv6 address %s", val);
+		if_errx(1, "Invalid IPv6 address %s", val);
 
 	memcpy(&carp_addr6, &(satosin6(res->ai_addr))->sin6_addr, sizeof(carp_addr6));
 	freeaddrinfo(res);
@@ -255,7 +253,7 @@ setcarp_version(if_ctx *ctx __unused, const char *val, int dummy __unused)
 	carpr_version = atoi(val);
 
 	if (carpr_version != CARP_VERSION_CARP && carpr_version != CARP_VERSION_VRRPv3)
-		errx(1, "version must be %d or %d", CARP_VERSION_CARP,
+		if_errx(1, "version must be %d or %d", CARP_VERSION_CARP,
 		    CARP_VERSION_VRRPv3);
 }
 
@@ -271,7 +269,7 @@ setvrrp_interval(if_ctx *ctx __unused, const char *val, int dummy __unused)
 	carpr_vrrp_adv_inter = atoi(val);
 
 	if (carpr_vrrp_adv_inter == 0 || carpr_vrrp_adv_inter > VRRP_MAX_INTERVAL)
-		errx(1, "vrrpinterval must be greater than 0 and less than %d", VRRP_MAX_INTERVAL);
+		if_errx(1, "vrrpinterval must be greater than 0 and less than %d", VRRP_MAX_INTERVAL);
 }
 
 static struct cmd carp_cmds[] = {

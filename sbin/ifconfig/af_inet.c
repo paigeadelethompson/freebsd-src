@@ -49,6 +49,7 @@
 
 #include "ifconfig.h"
 #include "ifconfig_netlink.h"
+#include "ifconfig_output.h"
 
 #ifdef WITHOUT_NETLINK
 static struct in_aliasreq in_addreq;
@@ -70,29 +71,7 @@ struct in_pdata {
 static struct in_pdata in_add, in_del;
 #endif
 
-static char addr_buf[NI_MAXHOST];	/*for getnameinfo()*/
 extern char *f_inet, *f_addr;
-
-static void
-print_addr(struct sockaddr_in *sin)
-{
-	int error, n_flags;
-
-	if (f_addr != NULL && strcmp(f_addr, "fqdn") == 0)
-		n_flags = 0;
-	else if (f_addr != NULL && strcmp(f_addr, "host") == 0)
-		n_flags = NI_NOFQDN;
-	else
-		n_flags = NI_NUMERICHOST;
-
-	error = getnameinfo((struct sockaddr *)sin, sin->sin_len, addr_buf,
-			    sizeof(addr_buf), NULL, 0, n_flags);
-
-	if (error)
-		inet_ntop(AF_INET, &sin->sin_addr, addr_buf, sizeof(addr_buf));
-	
-	printf("\tinet %s", addr_buf);
-}
 
 #ifdef WITHOUT_NETLINK
 static void
@@ -104,13 +83,13 @@ in_status(if_ctx *ctx __unused, const struct ifaddrs *ifa)
 	if (sin == NULL)
 		return;
 
-	print_addr(sin);
+	af_inet_print_addr(sin);
 
 	if (ifa->ifa_flags & IFF_POINTOPOINT) {
 		sin = satosin(ifa->ifa_dstaddr);
 		if (sin == NULL)
 			sin = &null_sin;
-		printf(" --> %s", inet_ntoa(sin->sin_addr));
+		af_inet_print_addr_pointtopoint(sin);
 	}
 
 	sin = satosin(ifa->ifa_netmask);
@@ -127,21 +106,21 @@ in_status(if_ctx *ctx __unused, const struct ifaddrs *ifa)
 			if (cidr == 0)
 				break;
 		}
-		printf("/%d", cidr);
+		af_inet_print_cidr_mask(cidr);
 	} else if (f_inet != NULL && strcmp(f_inet, "dotted") == 0)
-		printf(" netmask %s", inet_ntoa(sin->sin_addr));
+		af_inet_print_netmask_str(sin->sin_addr);
 	else
-		printf(" netmask 0x%lx", (unsigned long)ntohl(sin->sin_addr.s_addr));
+		af_inet_print_netmask(sin->sin_addr);
 
 	if (ifa->ifa_flags & IFF_BROADCAST) {
 		sin = satosin(ifa->ifa_broadaddr);
 		if (sin != NULL && sin->sin_addr.s_addr != 0)
-			printf(" broadcast %s", inet_ntoa(sin->sin_addr));
+			af_inet_print_broadcast(sin);
 	}
 
 	print_vhid(ifa);
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 
 #else
@@ -161,30 +140,30 @@ in_status_nl(if_ctx *ctx __unused, if_link_t *link, if_addr_t *ifa)
 	struct sockaddr_in *sin = satosin(ifa->ifa_local);
 	int plen = ifa->ifa_prefixlen;
 
-	print_addr(sin);
+	af_inet_print_addr(sin);
 
 	if (link->ifi_flags & IFF_POINTOPOINT) {
 		struct sockaddr_in *dst = satosin(ifa->ifa_address);
 
-		printf(" --> %s", inet_ntoa(dst->sin_addr));
+		af_inet_print_addr_pointtopoint(dst);
 	}
 	if (f_inet != NULL && strcmp(f_inet, "cidr") == 0) {
-		printf("/%d", plen);
+		af_inet_print_cidr_mask(plen);
 	} else if (f_inet != NULL && strcmp(f_inet, "dotted") == 0)
-		printf(" netmask %s", inet_ntoa(get_mask(plen)));
+		af_inet_print_netmask_str(get_mask(plen));
 	else
-		printf(" netmask 0x%lx", (unsigned long)ntohl(get_mask(plen).s_addr));
+		af_inet_print_netmask(get_mask(plen));
 
 	if ((link->ifi_flags & IFF_BROADCAST) && plen != 0)  {
 		struct sockaddr_in *brd = satosin(ifa->ifa_broadcast);
 		if (brd != NULL)
-			printf(" broadcast %s", inet_ntoa(brd->sin_addr));
+			af_inet_print_broadcast(brd);
 	}
 
 	if (ifa->ifaf_vhid != 0)
-		printf(" vhid %d", ifa->ifaf_vhid);
+		af_inet_print_vhid(ifa);
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 #endif
 
@@ -227,7 +206,7 @@ in_getaddr(const char *s, int which)
 				masklen = (int)strtonum(p + 1, 0, 32, &errstr);
 			if (errstr != NULL) {
 				*p = '/';
-				errx(1, "%s: bad value (width %s)", s, errstr);
+				if_errx(1, "%s: bad value (width %s)", s, errstr);
 			}
 			min->sin_family = AF_INET;
 			min->sin_len = sizeof(*min);
@@ -244,7 +223,7 @@ in_getaddr(const char *s, int which)
 	else if ((np = getnetbyname(s)) != NULL)
 		sin->sin_addr = inet_makeaddr(np->n_net, INADDR_ANY);
 	else
-		errx(1, "%s: bad value", s);
+		if_errx(1, "%s: bad value", s);
 }
 
 #else
@@ -278,7 +257,7 @@ in_getip(const char *addr_str, struct in_addr *ip)
 	else if ((np = getnetbyname(addr_str)) != NULL)
 		*ip = inet_makeaddr(np->n_net, INADDR_ANY);
 	else
-		errx(1, "%s: bad value", addr_str);
+		if_errx(1, "%s: bad value", addr_str);
 }
 
 static void
@@ -302,7 +281,7 @@ in_getaddr(const char *s, int which)
 		if((p = strrchr(s, '/')) != NULL) {
 			const char *errstr;
 			/* address is `name/masklen' */
-			int masklen;
+			int masklen = 0; // XXX had to be initialized?
 			*p = '\0';
 			if (!isdigit(*(p + 1)))
 				errstr = "invalid";
@@ -310,7 +289,7 @@ in_getaddr(const char *s, int which)
 				masklen = (int)strtonum(p + 1, 0, 32, &errstr);
 			if (errstr != NULL) {
 				*p = '/';
-				errx(1, "%s: bad value (width %s)", s, errstr);
+				if_errx(1, "%s: bad value (width %s)", s, errstr);
 			}
 			px->plen = masklen;
 			px->maskset = true;
@@ -371,7 +350,7 @@ in_delete_first_nl(if_ctx *ctx)
 	}
 	if (e.error != 0) {
 		if (e.error_str != NULL)
-			warnx("%s(): %s", __func__, e.error_str);
+			if_warnx("%s(): %s", __func__, e.error_str);
 		return (e.error);
 	}
 
@@ -391,7 +370,7 @@ in_delete_first_nl(if_ctx *ctx)
 	memset(&e, 0, sizeof(e));
 	snl_read_reply_code(ss, hdr->nlmsg_seq, &e);
 	if (e.error_str != NULL)
-		warnx("%s(): %s", __func__, e.error_str);
+		if_warnx("%s(): %s", __func__, e.error_str);
 
 	return (e.error);
 }
@@ -432,7 +411,7 @@ in_exec_nl(if_ctx *ctx, unsigned long action, void *data)
 	struct snl_errmsg_data e = {};
 	snl_read_reply_code(ctx->io_ss, hdr->nlmsg_seq, &e);
 	if (e.error_str != NULL)
-		warnx("%s(): %s", __func__, e.error_str);
+		if_warnx("%s(): %s", __func__, e.error_str);
 
 	return (e.error);
 }
@@ -442,7 +421,7 @@ static void
 err_nomask(int ifflags)
 {
     if ((ifflags & (IFF_POINTOPOINT | IFF_LOOPBACK)) == 0) {
-	errx(1, "ERROR: setting interface address without mask is no longer supported.");
+	if_errx(1, "ERROR: setting interface address without mask is no longer supported.");
     }
 }
 
@@ -485,7 +464,7 @@ in_status_tunnel(if_ctx *ctx)
 	if (getnameinfo(sa, sa->sa_len, dst, sizeof(dst), 0, 0, NI_NUMERICHOST) != 0)
 		dst[0] = '\0';
 
-	printf("\ttunnel inet %s --> %s\n", src, dst);
+	af_inet_print_tunnel_inet(src, dst);
 }
 
 static void
@@ -499,7 +478,7 @@ in_set_tunnel(if_ctx *ctx, struct addrinfo *srcres, struct addrinfo *dstres)
 	memcpy(&addreq.ifra_dstaddr, dstres->ai_addr, dstres->ai_addr->sa_len);
 
 	if (ioctl_ctx(ctx, SIOCSIFPHYADDR, &addreq) < 0)
-		warn("SIOCSIFPHYADDR");
+		if_warn("SIOCSIFPHYADDR");
 }
 
 static void

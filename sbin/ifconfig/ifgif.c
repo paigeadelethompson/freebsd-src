@@ -47,6 +47,7 @@
 #include <errno.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static const char *GIFBITS[] = {
 	[0] = "NOCLAMP",
@@ -63,9 +64,10 @@ gif_status(if_ctx *ctx)
 		return;
 	if (opts == 0)
 		return;
-	printf("\toptions=%x", opts);
-	print_bits("options", &opts, 1, GIFBITS, nitems(GIFBITS));
-	putchar('\n');
+	ifgif_print_options(opts);
+	ifconfig_print_bits("options", "option", &opts, 1, GIFBITS,
+	    nitems(GIFBITS));
+	ifconfig_print_newline();
 }
 
 static void
@@ -75,7 +77,7 @@ setgifopts(if_ctx *ctx, const char *val __unused, int d)
 	struct ifreq ifr = { .ifr_data = (caddr_t)&opts };
 
 	if (ioctl_ctx_ifr(ctx, GIFGOPTS, &ifr) == -1) {
-		warn("ioctl(GIFGOPTS)");
+		if_warn("ioctl(GIFGOPTS)");
 		return;
 	}
 
@@ -85,7 +87,7 @@ setgifopts(if_ctx *ctx, const char *val __unused, int d)
 		opts |= d;
 
 	if (ioctl_ctx(ctx, GIFSOPTS, &ifr) == -1) {
-		warn("ioctl(GIFSOPTS)");
+		if_warn("ioctl(GIFSOPTS)");
 		return;
 	}
 }

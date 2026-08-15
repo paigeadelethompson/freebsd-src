@@ -47,63 +47,11 @@
 
 #include "ifconfig.h"
 #include "ifconfig_netlink.h"
+#include "ifconfig_output.h"
 
 static struct ifreq link_ridreq;
 
 extern char *f_ether;
-
-static void
-print_ether(const struct ether_addr *addr, const char *prefix)
-{
-	char *ether_format = ether_ntoa(addr);
-
-	if (f_ether != NULL) {
-		if (strcmp(f_ether, "dash") == 0) {
-			char *format_char;
-
-			while ((format_char = strchr(ether_format, ':')) != NULL) {
-				*format_char = '-';
-			}
-		} else if (strcmp(f_ether, "dotted") == 0) {
-			/* Indices 0 and 1 is kept as is. */
-			ether_format[ 2] = ether_format[ 3];
-			ether_format[ 3] = ether_format[ 4];
-			ether_format[ 4] = '.';
-			ether_format[ 5] = ether_format[ 6];
-			ether_format[ 6] = ether_format[ 7];
-			ether_format[ 7] = ether_format[ 9];
-			ether_format[ 8] = ether_format[10];
-			ether_format[ 9] = '.';
-			ether_format[10] = ether_format[12];
-			ether_format[11] = ether_format[13];
-			ether_format[12] = ether_format[15];
-			ether_format[13] = ether_format[16];
-			ether_format[14] = '\0';
-		}
-	}
-	printf("\t%s %s\n", prefix, ether_format);
-}
-
-static void
-print_lladdr(struct sockaddr_dl *sdl)
-{
-	if (match_ether(sdl)) {
-		print_ether((struct ether_addr *)LLADDR(sdl), "ether");
-	} else {
-		int n = sdl->sdl_nlen > 0 ? sdl->sdl_nlen + 1 : 0;
-		printf("\tlladdr %s\n", link_ntoa(sdl) + n);
-	}
-}
-
-static void
-print_pcp(if_ctx *ctx)
-{
-	struct ifreq ifr = {};
-
-	if (ioctl_ctx_ifr(ctx, SIOCGLANPCP, &ifr) == 0 &&
-	    ifr.ifr_lan_pcp != IFNET_PCP_NONE)
-		printf("\tpcp %d\n", ifr.ifr_lan_pcp);
-}
 
 #ifdef WITHOUT_NETLINK
 static void
@@ -119,7 +67,7 @@ link_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	if (sdl == NULL || sdl->sdl_alen == 0)
 		return;
 
-	print_lladdr(sdl);
+	af_link_print_lladdr(sdl);
 
 	/*
 	 * Best-effort (i.e. failures are silent) to get original
@@ -138,7 +86,7 @@ link_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	memcpy(&ifr.ifr_addr, ifa->ifa_addr, sizeof(ifa->ifa_addr->sa_len));
 	ifr.ifr_addr.sa_family = AF_LOCAL;
 	if ((sock_hw = socket(AF_LOCAL, SOCK_DGRAM, 0)) < 0) {
-		warn("socket(AF_LOCAL,SOCK_DGRAM)");
+		if_warn("socket(AF_LOCAL,SOCK_DGRAM)");
 		return;
 	}
 	rc = ioctl(sock_hw, SIOCGHWADDR, &ifr);
@@ -154,9 +102,9 @@ link_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	    memcmp(ifr.ifr_addr.sa_data, LLADDR(sdl), sdl->sdl_alen) == 0)
 		goto pcp;
 
-	print_ether((const struct ether_addr *)&ifr.ifr_addr.sa_data, "hwaddr");
+	af_link_print_ether((const struct ether_addr *)&ifr.ifr_addr.sa_data, "hwaddr");
 pcp:
-	print_pcp(ctx);
+	af_link_print_pcp(ctx);
 }
 
 #else
@@ -172,17 +120,17 @@ link_status_nl(if_ctx *ctx, if_link_t *link, if_addr_t *ifa __unused)
 			.sdl_alen = NLA_DATA_LEN(link->ifla_address),
 		};
 		memcpy(LLADDR(&sdl), NLA_DATA(link->ifla_address), sdl.sdl_alen);
-		print_lladdr(&sdl);
+		af_link_print_lladdr(&sdl);
 
 		if (link->iflaf_orig_hwaddr != NULL) {
 			struct nlattr *hwaddr = link->iflaf_orig_hwaddr;
 
 			if (memcmp(NLA_DATA(hwaddr), NLA_DATA(link->ifla_address), sdl.sdl_alen))
-				print_ether((struct ether_addr *)NLA_DATA(hwaddr), "hwaddr");
+				af_link_print_ether((struct ether_addr *)NLA_DATA(hwaddr), "hwaddr");
 		}
 	}
 	if (convert_iftype(link->ifi_type) == IFT_ETHER)
-		print_pcp(ctx);
+		af_link_print_pcp(ctx);
 }
 #endif
 
@@ -194,7 +142,7 @@ link_getaddr(const char *addr, int which)
 	struct sockaddr *sa = &link_ridreq.ifr_addr;
 
 	if (which != ADDR)
-		errx(1, "can't set link-level netmask or broadcast");
+		if_errx(1, "can't set link-level netmask or broadcast");
 	if (!strcmp(addr, "random")) {
 		sdl.sdl_len = sizeof(sdl);
 		sdl.sdl_alen = ETHER_ADDR_LEN;
@@ -206,16 +154,16 @@ link_getaddr(const char *addr, int which)
 		sdl.sdl_data[0] |= 0x02;
 	} else {
 		if ((temp = malloc(strlen(addr) + 2)) == NULL)
-			errx(1, "malloc failed");
+			if_errx(1, "malloc failed");
 		temp[0] = ':';
 		strcpy(temp + 1, addr);
 		sdl.sdl_len = sizeof(sdl);
 		if (link_addr(temp, &sdl) == -1)
-			errx(1, "malformed link-level address");
+			if_errx(1, "malformed link-level address");
 		free(temp);
 	}
 	if (sdl.sdl_alen > sizeof(sa->sa_data))
-		errx(1, "malformed link-level address");
+		if_errx(1, "malformed link-level address");
 	sa->sa_family = AF_LINK;
 	sa->sa_len = sdl.sdl_alen;
 	bcopy(LLADDR(&sdl), sa->sa_data, sdl.sdl_alen);

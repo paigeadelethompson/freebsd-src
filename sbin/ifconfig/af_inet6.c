@@ -53,6 +53,8 @@
 
 #include "ifconfig.h"
 #include "ifconfig_netlink.h"
+#include "ifconfig_output.h"
+#include "af_inet6.h"
 
 #ifndef WITHOUT_NETLINK
 struct in6_px {
@@ -83,7 +85,7 @@ static	int ip6lifetime;
 #ifdef WITHOUT_NETLINK
 static	int prefix(void *, int);
 #endif
-static	char *sec2str(time_t);
+
 static	int explicit_prefix = 0;
 extern	char *f_inet6, *f_addr;
 
@@ -91,7 +93,7 @@ extern void setnd6flags(if_ctx *, const char *, int);
 extern void setnd6defif(if_ctx *,const char *, int);
 extern void nd6_status(if_ctx *);
 
-static	char addr_buf[NI_MAXHOST];	/*for getnameinfo()*/
+//static	char addr_buf[NI_MAXHOST];	/*for getnameinfo()*/
 
 static void
 setifprefixlen(if_ctx *ctx __netlink_unused, const char *addr, int dummy __unused)
@@ -105,7 +107,7 @@ setifprefixlen(if_ctx *ctx __netlink_unused, const char *addr, int dummy __unuse
 	int plen = strtol(addr, NULL, 10);
 
 	if ((plen < 0) || (plen > 128))
-		errx(1, "%s: bad value", addr);
+		if_errx(1, "%s: bad value", addr);
 	in6_add.addr.plen = plen;
 #endif
 	explicit_prefix = 1;
@@ -117,7 +119,7 @@ setip6flags(if_ctx *ctx, const char *dummyaddr __unused, int flag)
 	const struct afswtch *afp = ctx->afp;
 
 	if (afp->af_af != AF_INET6)
-		err(1, "address flags can be set only for inet6 addresses");
+		if_err(1, "address flags can be set only for inet6 addresses");
 
 #ifdef WITHOUT_NETLINK
 	if (flag < 0)
@@ -148,9 +150,9 @@ setip6lifetime(if_ctx *ctx, const char *cmd, const char *val)
 	clock_gettime(CLOCK_MONOTONIC_FAST, &now);
 	newval = (time_t)strtoul(val, &ep, 0);
 	if (val == ep)
-		errx(1, "invalid %s", cmd);
+		if_errx(1, "invalid %s", cmd);
 	if (afp->af_af != AF_INET6)
-		errx(1, "%s not allowed for the AF", cmd);
+		if_errx(1, "%s not allowed for the AF", cmd);
 	if (strcmp(cmd, "vltime") == 0) {
 		lifetime->ia6t_expire = now.tv_sec + newval;
 		lifetime->ia6t_vltime = newval;
@@ -182,16 +184,16 @@ setip6eui64(if_ctx *ctx, const char *cmd, int dummy __unused)
 	struct in6_addr *in6;
 
 	if (afp->af_af != AF_INET6)
-		errx(EXIT_FAILURE, "%s not allowed for the AF", cmd);
+		if_errx(EXIT_FAILURE, "%s not allowed for the AF", cmd);
 #ifdef WITHOUT_NETLINK
  	in6 = (struct in6_addr *)&in6_addreq.ifra_addr.sin6_addr;
 #else
 	in6 = &in6_add.addr.addr;
 #endif
 	if (memcmp(&in6addr_any.s6_addr[8], &in6->s6_addr[8], 8) != 0)
-		errx(EXIT_FAILURE, "interface index is already filled");
+		if_errx(EXIT_FAILURE, "interface index is already filled");
 	if (getifaddrs(&ifap) != 0)
-		err(EXIT_FAILURE, "getifaddrs");
+		if_err(EXIT_FAILURE, "getifaddrs");
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
 		if (ifa->ifa_addr->sa_family == AF_INET6 &&
 		    strcmp(ifa->ifa_name, ctx->ifname) == 0) {
@@ -203,85 +205,11 @@ setip6eui64(if_ctx *ctx, const char *cmd, int dummy __unused)
 		}
 	}
 	if (!lladdr)
-		errx(EXIT_FAILURE, "could not determine link local address"); 
+		if_errx(EXIT_FAILURE, "could not determine link local address");
 
  	memcpy(&in6->s6_addr[8], &lladdr->s6_addr[8], 8);
 
 	freeifaddrs(ifap);
-}
-
-static void
-print_addr(struct sockaddr_in6 *sin)
-{
-	int error, n_flags;
-
-	if (f_addr != NULL && strcmp(f_addr, "fqdn") == 0)
-		n_flags = 0;
-	else if (f_addr != NULL && strcmp(f_addr, "host") == 0)
-		n_flags = NI_NOFQDN;
-	else
-		n_flags = NI_NUMERICHOST;
-	error = getnameinfo((struct sockaddr *)sin, sin->sin6_len,
-			    addr_buf, sizeof(addr_buf), NULL, 0,
-			    n_flags);
-	if (error != 0)
-		inet_ntop(AF_INET6, &sin->sin6_addr, addr_buf,
-			  sizeof(addr_buf));
-	printf("\tinet6 %s", addr_buf);
-}
-
-static void
-print_p2p(struct sockaddr_in6 *sin)
-{
-	int error;
-
-	error = getnameinfo((struct sockaddr *)sin, sin->sin6_len, addr_buf,
-	    sizeof(addr_buf), NULL, 0, NI_NUMERICHOST);
-
-	if (error != 0)
-		inet_ntop(AF_INET6, &sin->sin6_addr, addr_buf, sizeof(addr_buf));
-	printf(" --> %s", addr_buf);
-}
-
-static void
-print_mask(int plen)
-{
-	if (f_inet6 != NULL && strcmp(f_inet6, "cidr") == 0)
-		printf("/%d", plen);
-	else
-		printf(" prefixlen %d", plen);
-}
-
-static void
-print_flags(int flags6)
-{
-	if ((flags6 & IN6_IFF_ANYCAST) != 0)
-		printf(" anycast");
-	if ((flags6 & IN6_IFF_TENTATIVE) != 0)
-		printf(" tentative");
-	if ((flags6 & IN6_IFF_DUPLICATED) != 0)
-		printf(" duplicated");
-	if ((flags6 & IN6_IFF_DETACHED) != 0)
-		printf(" detached");
-	if ((flags6 & IN6_IFF_DEPRECATED) != 0)
-		printf(" deprecated");
-	if ((flags6 & IN6_IFF_AUTOCONF) != 0)
-		printf(" autoconf");
-	if ((flags6 & IN6_IFF_TEMPORARY) != 0)
-		printf(" temporary");
-	if ((flags6 & IN6_IFF_PREFER_SOURCE) != 0)
-		printf(" prefer_source");
-
-}
-
-static void
-print_lifetime(const char *prepend, time_t px_time, struct timespec *now)
-{
-	printf(" %s", prepend);
-	if (px_time == 0)
-		printf(" infty");
-
-	printf(" %s", px_time < now->tv_sec ? "0" : sec2str(px_time - now->tv_sec));
 }
 
 #ifdef WITHOUT_NETLINK
@@ -300,12 +228,12 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 
 	strlcpy(ifr6.ifr_name, ctx->ifname, sizeof(ifr6.ifr_name));
 	if ((s6 = socket(AF_INET6, SOCK_DGRAM, 0)) < 0) {
-		warn("socket(AF_INET6,SOCK_DGRAM)");
+		if_warn("socket(AF_INET6,SOCK_DGRAM)");
 		return;
 	}
 	ifr6.ifr_addr = *sin;
 	if (ioctl(s6, SIOCGIFAFLAG_IN6, &ifr6) < 0) {
-		warn("ioctl(SIOCGIFAFLAG_IN6)");
+		if_warn("ioctl(SIOCGIFAFLAG_IN6)");
 		close(s6);
 		return;
 	}
@@ -313,14 +241,14 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	memset(&lifetime, 0, sizeof(lifetime));
 	ifr6.ifr_addr = *sin;
 	if (ioctl(s6, SIOCGIFALIFETIME_IN6, &ifr6) < 0) {
-		warn("ioctl(SIOCGIFALIFETIME_IN6)");
+		if_warn("ioctl(SIOCGIFALIFETIME_IN6)");
 		close(s6);
 		return;
 	}
 	lifetime = ifr6.ifr_ifru.ifru_lifetime;
 	close(s6);
 
-	print_addr(sin);
+	af_inet6_print_addr(sin);
 
 	if (ifa->ifa_flags & IFF_POINTOPOINT) {
 		sin = satosin6(ifa->ifa_dstaddr);
@@ -329,31 +257,30 @@ in6_status(if_ctx *ctx, const struct ifaddrs *ifa)
 		 * address.
 		 */
 		if (sin != NULL && sin->sin6_family == AF_INET6)
-			print_p2p(sin);
+			af_inet6_print_pointtopoint(sin);
 	}
 
 	sin = satosin6(ifa->ifa_netmask);
 	if (sin == NULL)
 		sin = &null_sin;
-	print_mask(prefix(&sin->sin6_addr, sizeof(struct in6_addr)));
+	af_inet6_print_mask(prefix(&sin->sin6_addr, sizeof(struct in6_addr)));
 
-	print_flags(flags6);
+	af_inet6_print_flags(flags6);
 
 	if ((satosin6(ifa->ifa_addr))->sin6_scope_id)
-		printf(" scopeid 0x%x",
-		    (satosin6(ifa->ifa_addr))->sin6_scope_id);
+		af_inet6_print_scopeid((satosin6(ifa->ifa_addr))->sin6_scope_id);
 
 	if (ip6lifetime && (lifetime.ia6t_preferred || lifetime.ia6t_expire)) {
 		struct timespec now;
 
 		clock_gettime(CLOCK_MONOTONIC_FAST, &now);
-		print_lifetime("pltime", lifetime.ia6t_preferred, &now);
-		print_lifetime("vltime", lifetime.ia6t_expire, &now);
+		af_inet6_print_lifetime("pltime", lifetime.ia6t_preferred, &now);
+		af_inet6_print_lifetime("vltime", lifetime.ia6t_expire, &now);
 	}
 
 	print_vhid(ifa);
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 
 #else
@@ -375,9 +302,9 @@ show_lifetime(struct ifa_cacheinfo *ci)
 	vl = (ci->ifa_valid == ND6_INFINITE_LIFETIME) ? 0 : ci->ifa_valid;
 
 	clock_gettime(CLOCK_MONOTONIC_FAST, &now);
-	print_lifetime("pltime",
+	af_inet6_print_lifetime("pltime",
 	    pl + (ip6lifetime ? ci->tstamp / 1000 : now.tv_sec), &now);
-	print_lifetime("vltime",
+	af_inet6_print_lifetime("vltime",
 	    vl + (ip6lifetime ? ci->tstamp / 1000 : now.tv_sec), &now);
 }
 
@@ -390,25 +317,25 @@ in6_status_nl(if_ctx *ctx __unused, if_link_t *link __unused, if_addr_t *ifa)
 	if (ifa->ifa_local == NULL) {
 		/* Non-P2P address */
 		scopeid = satosin6(ifa->ifa_address)->sin6_scope_id;
-		print_addr(satosin6(ifa->ifa_address));
+		af_inet6_print_addr(satosin6(ifa->ifa_address));
 	} else {
 		scopeid = satosin6(ifa->ifa_local)->sin6_scope_id;
-		print_addr(satosin6(ifa->ifa_local));
-		print_p2p(satosin6(ifa->ifa_address));
+		af_inet6_print_addr(satosin6(ifa->ifa_local));
+		af_inet6_print_pointtopoint(satosin6(ifa->ifa_address));
 	}
 
-	print_mask(plen);
-	print_flags(ifa->ifaf_flags);
+	af_inet6_print_mask(plen);
+	af_inet6_print_flags(ifa->ifaf_flags);
 
 	if (scopeid != 0)
-		printf(" scopeid 0x%x", scopeid);
+		af_inet6_print_scopeid(scopeid);
 
 	show_lifetime(ifa->ifa_cacheinfo);
 
 	if (ifa->ifaf_vhid != 0)
-		printf(" vhid %d", ifa->ifaf_vhid);
+		af_inet6_print_vhid(ifa);
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 
 static struct in6_px *sin6tab_nl[] = {
@@ -431,9 +358,9 @@ in6_getaddr(const char *addr_str, int which)
         struct in6_px *px = sin6tab_nl[which];
 
 	if (which == MASK)
-		errx(1, "netmask: invalid option for inet6");
+		if_errx(1, "netmask: invalid option for inet6");
 	if (which == BRDADDR)
-		errx(1, "broadcast: invalid option for inet6");
+		if_errx(1, "broadcast: invalid option for inet6");
 
         px->set = true;
         px->plen = 128;
@@ -443,7 +370,7 @@ in6_getaddr(const char *addr_str, int which)
                         *p = '\0';
                         int plen = strtol(p + 1, NULL, 10);
 			if (plen < 0 || plen > 128)
-                                errx(1, "%s: bad value", p + 1);
+                                if_errx(1, "%s: bad value", p + 1);
                         px->plen = plen;
                         explicit_prefix = 1;
                 }
@@ -455,7 +382,7 @@ in6_getaddr(const char *addr_str, int which)
         int error = getaddrinfo(addr_str, NULL, &hints, &res);
         if (error != 0) {
                 if (inet_pton(AF_INET6, addr_str, &px->addr) != 1)
-                        errx(1, "%s: bad value", addr_str);
+                        if_errx(1, "%s: bad value", addr_str);
         } else {
                 struct sockaddr_in6 *sin6;
 
@@ -525,7 +452,7 @@ in6_getprefix(const char *plen, int which)
 	int len = atoi(plen);
 
 	if ((len < 0) || (len > 128))
-		errx(1, "%s: bad value", plen);
+		if_errx(1, "%s: bad value", plen);
 	sin->sin6_len = sizeof(*sin);
 	if (which != MASK)
 		sin->sin6_family = AF_INET6;
@@ -565,7 +492,7 @@ in6_getaddr(const char *s, int which)
 		error = getaddrinfo(s, NULL, &hints, &res);
 		if (error != 0) {
 			if (inet_pton(AF_INET6, s, &sin->sin6_addr) != 1)
-				errx(1, "%s: bad value", s);
+				if_errx(1, "%s: bad value", s);
 		} else {
 			bcopy(res->ai_addr, sin, res->ai_addrlen);
 			freeaddrinfo(res);
@@ -597,39 +524,6 @@ prefix(void *val, int size)
 	return (plen);
 }
 #endif
-
-static char *
-sec2str(time_t total)
-{
-	static char result[256];
-	int days, hours, mins, secs;
-	int first = 1;
-	char *p = result;
-
-	if (0) {
-		days = total / 3600 / 24;
-		hours = (total / 3600) % 24;
-		mins = (total / 60) % 60;
-		secs = total % 60;
-
-		if (days) {
-			first = 0;
-			p += sprintf(p, "%dd", days);
-		}
-		if (!first || hours) {
-			first = 0;
-			p += sprintf(p, "%dh", hours);
-		}
-		if (!first || mins) {
-			first = 0;
-			p += sprintf(p, "%dm", mins);
-		}
-		sprintf(p, "%ds", secs);
-	} else
-		sprintf(result, "%lu", (unsigned long)total);
-
-	return(result);
-}
 
 static void
 in6_postproc(if_ctx *ctx, int newaddr __unused,
@@ -671,7 +565,7 @@ in6_status_tunnel(if_ctx *ctx)
 	    NI_NUMERICHOST) != 0)
 		dst[0] = '\0';
 
-	printf("\ttunnel inet6 %s --> %s\n", src, dst);
+	af_inet6_print_tunnel(src, dst);
 }
 
 static void
@@ -685,7 +579,7 @@ in6_set_tunnel(if_ctx *ctx, struct addrinfo *srcres, struct addrinfo *dstres)
 	    dstres->ai_addr->sa_len);
 
 	if (ioctl_ctx(ctx, SIOCSIFPHYADDR_IN6, &in6_req) < 0)
-		warn("SIOCSIFPHYADDR_IN6");
+		if_warn("SIOCSIFPHYADDR_IN6");
 }
 
 static void
@@ -728,8 +622,8 @@ static struct cmd inet6_cmds[] = {
 	DEF_CMD_ARG("pltime",        			setip6pltime),
 	DEF_CMD_ARG("vltime",        			setip6vltime),
 	DEF_CMD("eui64",	0,			setip6eui64),
-	DEF_CMD("stableaddr",	ND6_IFF_STABLEADDR,	setnd6flags),
-	DEF_CMD("-stableaddr",	-ND6_IFF_STABLEADDR,	setnd6flags),
+	//	DEF_CMD("stableaddr",	ND6_IFF_STABLEADDR,	setnd6flags),
+	//DEF_CMD("-stableaddr",	-ND6_IFF_STABLEADDR,	setnd6flags),
 };
 
 static struct afswtch af_inet6 = {
@@ -790,4 +684,37 @@ inet6_ctor(void)
 		cmd_register(&inet6_cmds[i]);
 	af_register(&af_inet6);
 	opt_register(&in6_Lopt);
+}
+
+char *
+sec2str(time_t total)
+{
+	static char result[256];
+	int days, hours, mins, secs;
+	int first = 1;
+	char *p = result;
+
+	if (0) {
+		days = total / 3600 / 24;
+		hours = (total / 3600) % 24;
+		mins = (total / 60) % 60;
+		secs = total % 60;
+
+		if (days) {
+			first = 0;
+			p += sprintf(p, "%dd", days);
+		}
+		if (!first || hours) {
+			first = 0;
+			p += sprintf(p, "%dh", hours);
+		}
+		if (!first || mins) {
+			first = 0;
+			p += sprintf(p, "%dm", mins);
+		}
+		sprintf(p, "%ds", secs);
+	} else
+		sprintf(result, "%lu", (unsigned long)total);
+
+	return(result);
 }

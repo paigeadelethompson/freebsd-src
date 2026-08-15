@@ -49,6 +49,7 @@
 #include <errno.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static struct ifvxlanparam params = {
 	.vxlp_vni	= VXLAN_VNI_MAX,
@@ -130,24 +131,18 @@ vxlan_status(if_ctx *ctx)
 		mc = IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr);
 	}
 
-	printf("\tvxlan vni %d", vni);
-	printf(" local %s%s%s:%s", ipv6 ? "[" : "", src, ipv6 ? "]" : "",
-	    srcport);
-	printf(" %s %s%s%s:%s", mc ? "group" : "remote", ipv6 ? "[" : "",
-	    dst, ipv6 ? "]" : "", dstport);
+	ifvxlan_print_vni(vni);
+	ifvxlan_print_src(ipv6, src, srcport);
+	ifvxlan_print_dst(mc, ipv6, dst, dstport);
 
 	if (ctx->args->verbose) {
-		printf("\n\t\tconfig: ");
-		printf("%slearning portrange %d-%d ttl %d",
-		    cfg.vxlc_learn ? "" : "no", cfg.vxlc_port_min,
-		    cfg.vxlc_port_max, cfg.vxlc_ttl);
-		printf("\n\t\tftable: ");
-		printf("cnt %d max %d timeout %d",
-		    cfg.vxlc_ftable_cnt, cfg.vxlc_ftable_max,
-		    cfg.vxlc_ftable_timeout);
+		ifvxlan_print_config();
+		ifvxlan_print_portrange(&cfg);
+		ifvxlan_print_ftable();
+		ifvxlan_print_threshold(&cfg);
 	}
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 
 #define _LOCAL_ADDR46 \
@@ -160,14 +155,14 @@ vxlan_check_params(void)
 {
 
 	if ((params.vxlp_with & _LOCAL_ADDR46) == _LOCAL_ADDR46)
-		errx(1, "cannot specify both local IPv4 and IPv6 addresses");
+		if_errx(1, "cannot specify both local IPv4 and IPv6 addresses");
 	if ((params.vxlp_with & _REMOTE_ADDR46) == _REMOTE_ADDR46)
-		errx(1, "cannot specify both remote IPv4 and IPv6 addresses");
+		if_errx(1, "cannot specify both remote IPv4 and IPv6 addresses");
 	if ((params.vxlp_with & VXLAN_PARAM_WITH_LOCAL_ADDR4 &&
 	     params.vxlp_with & VXLAN_PARAM_WITH_REMOTE_ADDR6) ||
 	    (params.vxlp_with & VXLAN_PARAM_WITH_LOCAL_ADDR6 &&
 	     params.vxlp_with & VXLAN_PARAM_WITH_REMOTE_ADDR4))
-		errx(1, "cannot mix IPv4 and IPv6 addresses");
+		if_errx(1, "cannot mix IPv4 and IPv6 addresses");
 }
 
 #undef _LOCAL_ADDR46
@@ -190,7 +185,7 @@ setvxlan_vni(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val >= VXLAN_VNI_MAX)
-		errx(1, "invalid network identifier: %s", arg);
+		if_errx(1, "invalid network identifier: %s", arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_VNI;
@@ -202,7 +197,7 @@ setvxlan_vni(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_vni = val;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_VNI, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_VNI");
+		if_err(1, "VXLAN_CMD_SET_VNI");
 }
 
 static void
@@ -218,7 +213,7 @@ setvxlan_local(if_ctx *ctx, const char *addr, int dummy __unused)
 	bzero(&cmd, sizeof(cmd));
 
 	if ((error = getaddrinfo(addr, NULL, NULL, &ai)) != 0)
-		errx(1, "error in parsing local address string: %s",
+		if_errx(1, "error in parsing local address string: %s",
 		    gai_strerror(error));
 
 #if (defined INET || defined INET6)
@@ -231,7 +226,7 @@ setvxlan_local(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in *sin = satosin(sa);
 
 		if (IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-			errx(1, "local address cannot be multicast");
+			if_errx(1, "local address cannot be multicast");
 
 		cmd.vxlcmd_sa.in4 = *sin;
 		break;
@@ -242,14 +237,14 @@ setvxlan_local(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in6 *sin6 = satosin6(sa);
 
 		if (IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
-			errx(1, "local address cannot be multicast");
+			if_errx(1, "local address cannot be multicast");
 
 		cmd.vxlcmd_sa.in6 = *sin6;
 		break;
 	}
 #endif
 	default:
-		errx(1, "local address %s not supported", addr);
+		if_errx(1, "local address %s not supported", addr);
 	}
 
 	freeaddrinfo(ai);
@@ -266,7 +261,7 @@ setvxlan_local(if_ctx *ctx, const char *addr, int dummy __unused)
 	}
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_LOCAL_ADDR, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_LOCAL_ADDR");
+		if_err(1, "VXLAN_CMD_SET_LOCAL_ADDR");
 }
 
 static void
@@ -282,7 +277,7 @@ setvxlan_remote(if_ctx *ctx, const char *addr, int dummy __unused)
 	bzero(&cmd, sizeof(cmd));
 
 	if ((error = getaddrinfo(addr, NULL, NULL, &ai)) != 0)
-		errx(1, "error in parsing remote address string: %s",
+		if_errx(1, "error in parsing remote address string: %s",
 		    gai_strerror(error));
 
 #if (defined INET || defined INET6)
@@ -295,7 +290,7 @@ setvxlan_remote(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in *sin = satosin(sa);
 
 		if (IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-			errx(1, "remote address cannot be multicast");
+			if_errx(1, "remote address cannot be multicast");
 
 		cmd.vxlcmd_sa.in4 = *sin;
 		break;
@@ -306,14 +301,14 @@ setvxlan_remote(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in6 *sin6 = satosin6(sa);
 
 		if (IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
-			errx(1, "remote address cannot be multicast");
+			if_errx(1, "remote address cannot be multicast");
 
 		cmd.vxlcmd_sa.in6 = *sin6;
 		break;
 	}
 #endif
 	default:
-		errx(1, "remote address %s not supported", addr);
+		if_errx(1, "remote address %s not supported", addr);
 	}
 
 	freeaddrinfo(ai);
@@ -330,7 +325,7 @@ setvxlan_remote(if_ctx *ctx, const char *addr, int dummy __unused)
 	}
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_REMOTE_ADDR, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_REMOTE_ADDR");
+		if_err(1, "VXLAN_CMD_SET_REMOTE_ADDR");
 }
 
 static void
@@ -346,7 +341,7 @@ setvxlan_group(if_ctx *ctx, const char *addr, int dummy __unused)
 	bzero(&cmd, sizeof(cmd));
 
 	if ((error = getaddrinfo(addr, NULL, NULL, &ai)) != 0)
-		errx(1, "error in parsing group address string: %s",
+		if_errx(1, "error in parsing group address string: %s",
 		    gai_strerror(error));
 
 #if (defined INET || defined INET6)
@@ -359,7 +354,7 @@ setvxlan_group(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in *sin = satosin(sa);
 
 		if (!IN_MULTICAST(ntohl(sin->sin_addr.s_addr)))
-			errx(1, "group address must be multicast");
+			if_errx(1, "group address must be multicast");
 
 		cmd.vxlcmd_sa.in4 = *sin;
 		break;
@@ -370,14 +365,14 @@ setvxlan_group(if_ctx *ctx, const char *addr, int dummy __unused)
 		struct sockaddr_in6 *sin6 = satosin6(sa);
 
 		if (!IN6_IS_ADDR_MULTICAST(&sin6->sin6_addr))
-			errx(1, "group address must be multicast");
+			if_errx(1, "group address must be multicast");
 
 		cmd.vxlcmd_sa.in6 = *sin6;
 		break;
 	}
 #endif
 	default:
-		errx(1, "group address %s not supported", addr);
+		if_errx(1, "group address %s not supported", addr);
 	}
 
 	freeaddrinfo(ai);
@@ -394,7 +389,7 @@ setvxlan_group(if_ctx *ctx, const char *addr, int dummy __unused)
 	}
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_REMOTE_ADDR, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_REMOTE_ADDR");
+		if_err(1, "VXLAN_CMD_SET_REMOTE_ADDR");
 }
 
 static void
@@ -404,7 +399,7 @@ setvxlan_local_port(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val >= UINT16_MAX)
-		errx(1, "invalid local port: %s", arg);
+		if_errx(1, "invalid local port: %s", arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_LOCAL_PORT;
@@ -416,7 +411,7 @@ setvxlan_local_port(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_port = val;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_LOCAL_PORT, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_LOCAL_PORT");
+		if_err(1, "VXLAN_CMD_SET_LOCAL_PORT");
 }
 
 static void
@@ -426,7 +421,7 @@ setvxlan_remote_port(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val >= UINT16_MAX)
-		errx(1, "invalid remote port: %s", arg);
+		if_errx(1, "invalid remote port: %s", arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_REMOTE_PORT;
@@ -438,7 +433,7 @@ setvxlan_remote_port(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_port = val;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_REMOTE_PORT, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_REMOTE_PORT");
+		if_err(1, "VXLAN_CMD_SET_REMOTE_PORT");
 }
 
 static void
@@ -448,11 +443,11 @@ setvxlan_port_range(if_ctx *ctx, const char *arg1, const char *arg2)
 	u_long min, max;
 
 	if (get_val(arg1, &min) < 0 || min >= UINT16_MAX)
-		errx(1, "invalid port range minimum: %s", arg1);
+		if_errx(1, "invalid port range minimum: %s", arg1);
 	if (get_val(arg2, &max) < 0 || max >= UINT16_MAX)
-		errx(1, "invalid port range maximum: %s", arg2);
+		if_errx(1, "invalid port range maximum: %s", arg2);
 	if (max < min)
-		errx(1, "invalid port range");
+		if_errx(1, "invalid port range");
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_PORT_RANGE;
@@ -466,7 +461,7 @@ setvxlan_port_range(if_ctx *ctx, const char *arg1, const char *arg2)
 	cmd.vxlcmd_port_max = max;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_PORT_RANGE, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_PORT_RANGE");
+		if_err(1, "VXLAN_CMD_SET_PORT_RANGE");
 }
 
 static void
@@ -476,7 +471,7 @@ setvxlan_timeout(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xFFFFFFFF) != 0)
-		errx(1, "invalid timeout value: %s", arg);
+		if_errx(1, "invalid timeout value: %s", arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_FTABLE_TIMEOUT;
@@ -488,7 +483,7 @@ setvxlan_timeout(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_ftable_timeout = val & 0xFFFFFFFF;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_FTABLE_TIMEOUT, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_FTABLE_TIMEOUT");
+		if_err(1, "VXLAN_CMD_SET_FTABLE_TIMEOUT");
 }
 
 static void
@@ -498,7 +493,7 @@ setvxlan_maxaddr(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xFFFFFFFF) != 0)
-		errx(1, "invalid maxaddr value: %s",  arg);
+		if_errx(1, "invalid maxaddr value: %s",  arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_FTABLE_MAX;
@@ -510,7 +505,7 @@ setvxlan_maxaddr(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_ftable_max = val & 0xFFFFFFFF;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_FTABLE_MAX, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_FTABLE_MAX");
+		if_err(1, "VXLAN_CMD_SET_FTABLE_MAX");
 }
 
 static void
@@ -529,7 +524,7 @@ setvxlan_dev(if_ctx *ctx, const char *arg, int dummy __unused)
 	strlcpy(cmd.vxlcmd_ifname, arg, sizeof(cmd.vxlcmd_ifname));
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_MULTICAST_IF, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_MULTICAST_IF");
+		if_err(1, "VXLAN_CMD_SET_MULTICAST_IF");
 }
 
 static void
@@ -539,7 +534,7 @@ setvxlan_ttl(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val > 256)
-		errx(1, "invalid TTL value: %s", arg);
+		if_errx(1, "invalid TTL value: %s", arg);
 
 	if (!vxlan_exists(ctx)) {
 		params.vxlp_with |= VXLAN_PARAM_WITH_TTL;
@@ -551,7 +546,7 @@ setvxlan_ttl(if_ctx *ctx, const char *arg, int dummy __unused)
 	cmd.vxlcmd_ttl = val;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_TTL, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_TTL");
+		if_err(1, "VXLAN_CMD_SET_TTL");
 }
 
 static void
@@ -570,7 +565,7 @@ setvxlan_learn(if_ctx *ctx, const char *arg __unused, int d)
 		cmd.vxlcmd_flags |= VXLAN_CMD_FLAG_LEARN;
 
 	if (do_cmd(ctx, VXLAN_CMD_SET_LEARN, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_SET_LEARN");
+		if_err(1, "VXLAN_CMD_SET_LEARN");
 }
 
 static void
@@ -583,7 +578,7 @@ setvxlan_flush(if_ctx *ctx, const char *val __unused, int d)
 		cmd.vxlcmd_flags |= VXLAN_CMD_FLAG_FLUSH_ALL;
 
 	if (do_cmd(ctx, VXLAN_CMD_FLUSH, &cmd, sizeof(cmd), 1) < 0)
-		err(1, "VXLAN_CMD_FLUSH");
+		if_err(1, "VXLAN_CMD_FLUSH");
 }
 
 static struct cmd vxlan_cmds[] = {

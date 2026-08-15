@@ -58,15 +58,17 @@
 
 #include <libifconfig.h>
 
+#include "ifbridge.h"
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static int	parse_vlans(ifbvlan_set_t *set, const char *str);
 static int	get_val(const char *cp, u_long *valp);
 static int	get_vlan_id(const char *cp, ether_vlanid_t *valp);
 
-static const char *stpstates[] = { STP_STATES };
-static const char *stpproto[] = { STP_PROTOS };
-static const char *stproles[] = { STP_ROLES };
+const char *stpstates[] = { STP_STATES };
+const char *stpproto[] = { STP_PROTOS };
+const char *stproles[] = { STP_ROLES };
 
 static int
 get_val(const char *cp, u_long *valp)
@@ -118,7 +120,7 @@ do_bridgeflag(if_ctx *ctx, const char *ifs, int flag, int set)
 	strlcpy(req.ifbr_ifsname, ifs, sizeof(req.ifbr_ifsname));
 
 	if (do_cmd(ctx, BRDGGIFFLGS, &req, sizeof(req), 0) < 0)
-		err(1, "unable to get bridge flags");
+		if_err(1, "unable to get bridge flags");
 
 	if (set)
 		req.ifbr_ifsflags |= flag;
@@ -126,7 +128,7 @@ do_bridgeflag(if_ctx *ctx, const char *ifs, int flag, int set)
 		req.ifbr_ifsflags &= ~flag;
 
 	if (do_cmd(ctx, BRDGSIFFLGS, &req, sizeof(req), 1) < 0)
-		err(1, "unable to set bridge flags");
+		if_err(1, "unable to set bridge flags");
 }
 
 static void
@@ -136,16 +138,15 @@ bridge_addresses(if_ctx *ctx, const char *prefix)
 	struct ifbareq *ifba;
 	char *inbuf = NULL, *ninbuf;
 	size_t len = 8192;
-	struct ether_addr ea;
 
 	for (;;) {
 		ninbuf = realloc(inbuf, len);
 		if (ninbuf == NULL)
-			err(1, "unable to allocate address buffer");
+			if_err(1, "unable to allocate address buffer");
 		ifbac.ifbac_len = len;
 		ifbac.ifbac_buf = inbuf = ninbuf;
 		if (do_cmd(ctx, BRDGRTS, &ifbac, sizeof(ifbac), 0) < 0)
-			err(1, "unable to get address cache");
+			if_err(1, "unable to get address cache");
 		if ((ifbac.ifbac_len + sizeof(*ifba)) < len)
 			break;
 		len *= 2;
@@ -153,48 +154,15 @@ bridge_addresses(if_ctx *ctx, const char *prefix)
 
 	for (unsigned long i = 0; i < ifbac.ifbac_len / sizeof(*ifba); i++) {
 		ifba = ifbac.ifbac_req + i;
-		memcpy(ea.octet, ifba->ifba_dst,
-		    sizeof(ea.octet));
-		printf("%s%s Vlan%d %s %lu ", prefix, ether_ntoa(&ea),
-		    ifba->ifba_vlan, ifba->ifba_ifsname, ifba->ifba_expire);
-		printb("flags", ifba->ifba_flags, IFBAFBITS);
-		printf("\n");
+		ifbridge_print_vlan(prefix, ifba);
+		ifconfig_printb("flags", ifba->ifba_flags, IFBAFBITS);
+		ifconfig_print_newline();
 	}
 
 	free(inbuf);
 }
 
-static void
-print_vlans(ifbvlan_set_t *vlans)
-{
-	unsigned printed = 0;
-
-	for (unsigned vlan = DOT1Q_VID_MIN; vlan <= DOT1Q_VID_MAX;) {
-		unsigned last;
-
-		if (!BRVLAN_TEST(vlans, vlan)) {
-			++vlan;
-			continue;
-		}
-
-		last = vlan;
-		while (last < DOT1Q_VID_MAX && BRVLAN_TEST(vlans, last + 1))
-			++last;
-
-		if (printed == 0)
-			printf(" tagged ");
-		else
-			printf(",");
-
-		printf("%u", vlan);
-		if (last != vlan)
-			printf("-%u", last);
-		++printed;
-		vlan = last + 1;
-	}
-}
-
-static char const *
+char const *
 vlan_proto_name(uint16_t proto)
 {
 	switch (proto) {
@@ -213,80 +181,54 @@ static void
 bridge_status(if_ctx *ctx)
 {
 	struct ifconfig_bridge_status *bridge;
-	struct ifbropreq *params;
 	const char *pad, *prefix;
-	uint8_t lladdr[ETHER_ADDR_LEN];
-	uint16_t bprio;
 
 	if (ifconfig_bridge_get_bridge_status(lifh, ctx->ifname, &bridge) == -1)
 		return;
 
-	params = bridge->params;
+	ifbridge_print_summary(bridge);
 
-	PV2ID(params->ifbop_bridgeid, bprio, lladdr);
-	printf("\tid %s priority %u hellotime %u fwddelay %u\n",
-	    ether_ntoa((struct ether_addr *)lladdr),
-	    params->ifbop_priority,
-	    params->ifbop_hellotime,
-	    params->ifbop_fwddelay);
-	printf("\tmaxage %u holdcnt %u proto %s maxaddr %u timeout %u\n",
-	    params->ifbop_maxage,
-	    params->ifbop_holdcount,
-	    stpproto[params->ifbop_protocol],
-	    bridge->cache_size,
-	    bridge->cache_lifetime);
-	PV2ID(params->ifbop_designated_root, bprio, lladdr);
-	printf("\troot id %s priority %d ifcost %u port %u\n",
-	    ether_ntoa((struct ether_addr *)lladdr),
-	    bprio,
-	    params->ifbop_root_path_cost,
-	    params->ifbop_root_port & 0xfff);
-
-	printb("\tbridge flags", bridge->flags, IFBRFBITS);
+	ifconfig_printb("\tbridge flags", bridge->flags, IFBRFBITS);
 	if (bridge->defpvid)
-		printf(" defuntagged=%u", (unsigned) bridge->defpvid);
-	printf("\n");
+		ifbridge_print_defuntagged(bridge);
+	ifconfig_print_newline();
 
 	prefix = "\tmember: ";
 	pad    = "\t        ";
 	for (size_t i = 0; i < bridge->members_count; ++i) {
 		struct ifbreq *member = &bridge->members[i];
 
-		printf("%s%s ", prefix, member->ifbr_ifsname);
-		printb("flags", member->ifbr_ifsflags, IFBIFBITS);
-		printf("\n%s", pad);
+		ifbridge_print_bridge_member(prefix, member);
+		ifconfig_printb("flags", member->ifbr_ifsflags, IFBIFBITS);
+		ifbridge_print_bridge_member_pad(pad);
 		if (member->ifbr_addrmax != 0)
-			printf("ifmaxaddr %u ", member->ifbr_addrmax);
-		printf("port %u priority %u path cost %u",
-		    member->ifbr_portno,
-		    member->ifbr_priority,
-		    member->ifbr_path_cost);
+			ifbridge_print_bridge_member_maxaddr(member);
+		ifbridge_print_bridge_member_stp(member);
 		if (member->ifbr_ifsflags & IFBIF_STP) {
 			uint8_t proto = member->ifbr_proto;
 			uint8_t role = member->ifbr_role;
 			uint8_t state = member->ifbr_state;
 
 			if (proto < nitems(stpproto))
-				printf(" proto %s", stpproto[proto]);
+				ifbridge_print_bridge_member_proto(proto);
 			else
-				printf(" <unknown proto %d>", proto);
-			printf("\n%s", pad);
+				ifbridge_print_bridge_member_proto_unknown(proto);
+			ifbridge_print_bridge_member_pad(pad);
 			if (role < nitems(stproles))
-				printf("role %s", stproles[role]);
+				ifbridge_print_bridge_member_role(role);
 			else
-				printf("<unknown role %d>", role);
+				ifbridge_print_bridge_member_role_unknown(role);
 			if (state < nitems(stpstates))
-				printf(" state %s", stpstates[state]);
+				ifbridge_print_bridge_member_state(state);
 			else
-				printf(" <unknown state %d>", state);
+				ifbridge_print_bridge_member_state_unknown(state);
 		}
 		if (member->ifbr_vlanproto != 0)
-			printf(" vlan protocol %s",
-			    vlan_proto_name(member->ifbr_vlanproto));
+			ifbridge_print_bridge_member_vlan_proto(member);
 		if (member->ifbr_pvid != 0)
-			printf(" untagged %u", (unsigned)member->ifbr_pvid);
-		print_vlans(&bridge->member_vlans[i]);
-		printf("\n");
+			ifbridge_print_bridge_member_pvid(member);
+		ifbridge_print_vlans(&bridge->member_vlans[i]);
+		ifconfig_print_newline();
 	}
 
 	ifconfig_bridge_free_bridge_status(bridge);
@@ -303,7 +245,7 @@ setbridge_add(if_ctx *ctx, int argc, const char *const *argv)
 	memset(&vlreq, 0, sizeof(vlreq));
 
 	if (argc < 1)
-		errx(1, "usage: addm <interface> [opts ...]");
+		if_errx(1, "usage: addm <interface> [opts ...]");
 
 	strlcpy(req.ifbr_ifsname, argv[0], sizeof(req.ifbr_ifsname));
 	--argc; ++argv;
@@ -311,22 +253,22 @@ setbridge_add(if_ctx *ctx, int argc, const char *const *argv)
 	while (argc) {
 		if (strcmp(argv[0], "untagged") == 0) {
 			if (argc < 2)
-				errx(1, "usage: untagged <vlan id>");
+				if_errx(1, "usage: untagged <vlan id>");
 
 			if (get_vlan_id(argv[1], &req.ifbr_pvid) < 0)
-				errx(1, "invalid VLAN identifier: %s", argv[1]);
+				if_errx(1, "invalid VLAN identifier: %s", argv[1]);
 
 			argc -= 2;
 			argv += 2;
 		} else if (strcmp(argv[0], "tagged") == 0) {
 			if (argc < 2)
-				errx(1, "usage: tagged <vlan set>");
+				if_errx(1, "usage: tagged <vlan set>");
 
 			vlreq.bv_op = BRDG_VLAN_OP_SET;
 			strlcpy(vlreq.bv_ifname, req.ifbr_ifsname,
 			    sizeof(vlreq.bv_ifname));
 			if (parse_vlans(&vlreq.bv_set, argv[1]) != 0)
-				errx(1, "invalid vlan set: %s", argv[1]);
+				if_errx(1, "invalid vlan set: %s", argv[1]);
 
 			argc -= 2;
 			argv += 2;
@@ -336,16 +278,16 @@ setbridge_add(if_ctx *ctx, int argc, const char *const *argv)
 	}
 
 	if (do_cmd(ctx, BRDGADD, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGADD %s", req.ifbr_ifsname);
+		if_err(1, "BRDGADD %s", req.ifbr_ifsname);
 
 	if (req.ifbr_pvid != 0 &&
 	    do_cmd(ctx, BRDGSIFPVID, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFPVID %s %u", req.ifbr_ifsname,
+		if_err(1, "BRDGSIFPVID %s %u", req.ifbr_ifsname,
 		    (unsigned)req.ifbr_pvid);
 
 	if (vlreq.bv_op != 0 &&
 	    do_cmd(ctx, BRDGSIFVLANSET, &vlreq, sizeof(vlreq), 1) < 0)
-		err(1, "BRDGSIFVLANSET %s", req.ifbr_ifsname);
+		if_err(1, "BRDGSIFVLANSET %s", req.ifbr_ifsname);
 
 	return (oargc - argc);
 }
@@ -358,7 +300,7 @@ setbridge_delete(if_ctx *ctx, const char *val, int dummy __unused)
 	memset(&req, 0, sizeof(req));
 	strlcpy(req.ifbr_ifsname, val, sizeof(req.ifbr_ifsname));
 	if (do_cmd(ctx, BRDGDEL, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGDEL %s",  val);
+		if_err(1, "BRDGDEL %s",  val);
 }
 
 static void
@@ -411,7 +353,7 @@ setbridge_span(if_ctx *ctx, const char *val, int dummy __unused)
 	memset(&req, 0, sizeof(req));
 	strlcpy(req.ifbr_ifsname, val, sizeof(req.ifbr_ifsname));
 	if (do_cmd(ctx, BRDGADDS, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGADDS %s",  val);
+		if_err(1, "BRDGADDS %s",  val);
 }
 
 static void
@@ -422,7 +364,7 @@ unsetbridge_span(if_ctx *ctx, const char *val, int dummy __unused)
 	memset(&req, 0, sizeof(req));
 	strlcpy(req.ifbr_ifsname, val, sizeof(req.ifbr_ifsname));
 	if (do_cmd(ctx, BRDGDELS, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGDELS %s",  val);
+		if_err(1, "BRDGDELS %s",  val);
 }
 
 static void
@@ -495,7 +437,7 @@ setbridge_flush(if_ctx *ctx, const char *val __unused, int dummy __unused)
 	memset(&req, 0, sizeof(req));
 	req.ifbr_ifsflags = IFBF_FLUSHDYN;
 	if (do_cmd(ctx, BRDGFLUSH, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGFLUSH");
+		if_err(1, "BRDGFLUSH");
 }
 
 static void
@@ -506,7 +448,7 @@ setbridge_flushall(if_ctx *ctx, const char *val __unused, int dummy __unused)
 	memset(&req, 0, sizeof(req));
 	req.ifbr_ifsflags = IFBF_FLUSHALL;
 	if (do_cmd(ctx, BRDGFLUSH, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGFLUSH");
+		if_err(1, "BRDGFLUSH");
 }
 
 static int
@@ -517,7 +459,7 @@ setbridge_static(if_ctx *ctx, int argc, const char *const *argv)
 	int arg;
 
 	if (argc < 2)
-		errx(1, "usage: static <interface> <address> [vlan <id>]");
+		if_errx(1, "usage: static <interface> <address> [vlan <id>]");
 	arg = 0;
 
 	memset(&req, 0, sizeof(req));
@@ -528,24 +470,24 @@ setbridge_static(if_ctx *ctx, int argc, const char *const *argv)
 
 	ea = ether_aton(argv[arg]);
 	if (ea == NULL)
-		errx(1, "invalid address: %s", argv[arg]);
+		if_errx(1, "invalid address: %s", argv[arg]);
 	memcpy(req.ifba_dst, ea->octet, sizeof(req.ifba_dst));
 	++arg;
 
 	req.ifba_vlan = 0;
 	if (argc > 2 && strcmp(argv[arg], "vlan") == 0) {
 		if (argc < 3)
-			errx(1, "usage: static <interface> <address> "
+			if_errx(1, "usage: static <interface> <address> "
 			    "[vlan <id>]");
 		++arg;
 
 		if (get_vlan_id(argv[arg], &req.ifba_vlan) < 0)
-			errx(1, "invalid vlan id: %s", argv[arg]);
+			if_errx(1, "invalid vlan id: %s", argv[arg]);
 		++arg;
 	}
 
 	if (do_cmd(ctx, BRDGSADDR, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSADDR");
+		if_err(1, "BRDGSADDR");
 	return arg;
 }
 
@@ -557,30 +499,30 @@ setbridge_deladdr(if_ctx *ctx, int argc, const char *const *argv)
 	int arg;
 
 	if (argc < 1)
-		errx(1, "usage: deladdr <address> [vlan <id>]");
+		if_errx(1, "usage: deladdr <address> [vlan <id>]");
 	arg = 0;
 
 	memset(&req, 0, sizeof(req));
 
 	ea = ether_aton(argv[arg]);
 	if (ea == NULL)
-		errx(1, "invalid address: %s", argv[arg]);
+		if_errx(1, "invalid address: %s", argv[arg]);
 	memcpy(req.ifba_dst, ea->octet, sizeof(req.ifba_dst));
 	++arg;
 
 	req.ifba_vlan = 0;
 	if (argc >= 2 && strcmp(argv[arg], "vlan") == 0) {
 		if (argc < 3)
-			errx(1, "usage: deladdr <address> [vlan <id>]");
+			if_errx(1, "usage: deladdr <address> [vlan <id>]");
 		++arg;
 
 		if (get_vlan_id(argv[arg], &req.ifba_vlan) < 0)
-			errx(1, "invalid vlan id: %s", argv[arg]);
+			if_errx(1, "invalid vlan id: %s", argv[arg]);
 		++arg;
 	}
 
 	if (do_cmd(ctx, BRDGDADDR, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGDADDR");
+		if_err(1, "BRDGDADDR");
 
 	return arg;
 }
@@ -598,12 +540,12 @@ setbridge_maxaddr(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xffffffff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_csize = val & 0xffffffff;
 
 	if (do_cmd(ctx, BRDGSCACHE, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSCACHE %s",  arg);
+		if_err(1, "BRDGSCACHE %s",  arg);
 }
 
 static void
@@ -613,12 +555,12 @@ setbridge_hellotime(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_hellotime = val & 0xff;
 
 	if (do_cmd(ctx, BRDGSHT, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSHT %s",  arg);
+		if_err(1, "BRDGSHT %s",  arg);
 }
 
 static void
@@ -628,12 +570,12 @@ setbridge_fwddelay(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_fwddelay = val & 0xff;
 
 	if (do_cmd(ctx, BRDGSFD, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSFD %s",  arg);
+		if_err(1, "BRDGSFD %s",  arg);
 }
 
 static void
@@ -643,12 +585,12 @@ setbridge_maxage(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_maxage = val & 0xff;
 
 	if (do_cmd(ctx, BRDGSMA, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSMA %s",  arg);
+		if_err(1, "BRDGSMA %s",  arg);
 }
 
 static void
@@ -658,12 +600,12 @@ setbridge_priority(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xffff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_prio = val & 0xffff;
 
 	if (do_cmd(ctx, BRDGSPRI, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSPRI %s",  arg);
+		if_err(1, "BRDGSPRI %s",  arg);
 }
 
 static void
@@ -676,11 +618,11 @@ setbridge_protocol(if_ctx *ctx, const char *arg, int dummy __unused)
 	} else if (strcasecmp(arg, "rstp") == 0) {
 		param.ifbrp_proto = 2;
 	} else {
-		errx(1, "unknown stp protocol");
+		if_errx(1, "unknown stp protocol");
 	}
 
 	if (do_cmd(ctx, BRDGSPROTO, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSPROTO %s",  arg);
+		if_err(1, "BRDGSPROTO %s",  arg);
 }
 
 static void
@@ -690,12 +632,12 @@ setbridge_holdcount(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_txhc = val & 0xff;
 
 	if (do_cmd(ctx, BRDGSTXHC, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSTXHC %s",  arg);
+		if_err(1, "BRDGSTXHC %s",  arg);
 }
 
 static void
@@ -707,13 +649,13 @@ setbridge_ifpriority(if_ctx *ctx, const char *ifn, const char *pri)
 	memset(&req, 0, sizeof(req));
 
 	if (get_val(pri, &val) < 0 || (val & ~0xff) != 0)
-		errx(1, "invalid value: %s",  pri);
+		if_errx(1, "invalid value: %s",  pri);
 
 	strlcpy(req.ifbr_ifsname, ifn, sizeof(req.ifbr_ifsname));
 	req.ifbr_priority = val & 0xff;
 
 	if (do_cmd(ctx, BRDGSIFPRIO, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFPRIO %s",  pri);
+		if_err(1, "BRDGSIFPRIO %s",  pri);
 }
 
 static void
@@ -725,13 +667,13 @@ setbridge_ifpathcost(if_ctx *ctx, const char *ifn, const char *cost)
 	memset(&req, 0, sizeof(req));
 
 	if (get_val(cost, &val) < 0)
-		errx(1, "invalid value: %s",  cost);
+		if_errx(1, "invalid value: %s",  cost);
 
 	strlcpy(req.ifbr_ifsname, ifn, sizeof(req.ifbr_ifsname));
 	req.ifbr_path_cost = val;
 
 	if (do_cmd(ctx, BRDGSIFCOST, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFCOST %s",  cost);
+		if_err(1, "BRDGSIFCOST %s",  cost);
 }
 
 static void
@@ -743,10 +685,10 @@ setbridge_ifuntagged(if_ctx *ctx, const char *ifn, const char *vlanid)
 	strlcpy(req.ifbr_ifsname, ifn, sizeof(req.ifbr_ifsname));
 
 	if (get_vlan_id(vlanid, &req.ifbr_pvid) < 0)
-		errx(1, "invalid VLAN identifier: %s", vlanid);
+		if_errx(1, "invalid VLAN identifier: %s", vlanid);
 
 	if (do_cmd(ctx, BRDGSIFPVID, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFPVID %s", vlanid);
+		if_err(1, "BRDGSIFPVID %s", vlanid);
 }
 
 static void
@@ -760,7 +702,7 @@ unsetbridge_ifuntagged(if_ctx *ctx, const char *ifn, int dummy __unused)
 	req.ifbr_pvid = 0;
 
 	if (do_cmd(ctx, BRDGSIFPVID, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFPVID");
+		if_err(1, "BRDGSIFPVID");
 }
 
 static void
@@ -772,13 +714,13 @@ setbridge_ifmaxaddr(if_ctx *ctx, const char *ifn, const char *arg)
 	memset(&req, 0, sizeof(req));
 
 	if (get_val(arg, &val) < 0 || (val & ~0xffffffff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	strlcpy(req.ifbr_ifsname, ifn, sizeof(req.ifbr_ifsname));
 	req.ifbr_addrmax = val & 0xffffffff;
 
 	if (do_cmd(ctx, BRDGSIFAMAX, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFAMAX %s",  arg);
+		if_err(1, "BRDGSIFAMAX %s",  arg);
 }
 
 static void
@@ -788,12 +730,12 @@ setbridge_timeout(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xffffffff) != 0)
-		errx(1, "invalid value: %s",  arg);
+		if_errx(1, "invalid value: %s",  arg);
 
 	param.ifbrp_ctime = val & 0xffffffff;
 
 	if (do_cmd(ctx, BRDGSTO, &param, sizeof(param), 1) < 0)
-		err(1, "BRDGSTO %s",  arg);
+		if_err(1, "BRDGSTO %s",  arg);
 }
 
 static void
@@ -874,13 +816,13 @@ set_bridge_vlanset(if_ctx *ctx, const char *ifn, const char *vlans, int op)
 	memset(&req, 0, sizeof(req));
 
 	if (parse_vlans(&req.bv_set, vlans) != 0)
-		errx(1, "invalid vlan set: %s", vlans);
+		if_errx(1, "invalid vlan set: %s", vlans);
 
 	strlcpy(req.bv_ifname, ifn, sizeof(req.bv_ifname));
 	req.bv_op = op;
 
 	if (do_cmd(ctx, BRDGSIFVLANSET, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFVLANSET %s", vlans);
+		if_err(1, "BRDGSIFVLANSET %s", vlans);
 }
 
 static void
@@ -907,12 +849,12 @@ setbridge_flags(if_ctx *ctx, const char *val __unused, int newflags)
 	struct ifbrparam req;
 
 	if (do_cmd(ctx, BRDGGFLAGS, &req, sizeof(req), 0) < 0)
-		err(1, "BRDGGFLAGS");
+		if_err(1, "BRDGGFLAGS");
 
 	req.ifbrp_flags |= (uint32_t)newflags;
 
 	if (do_cmd(ctx, BRDGSFLAGS, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSFLAGS");
+		if_err(1, "BRDGSFLAGS");
 }
 
 static void
@@ -921,12 +863,12 @@ unsetbridge_flags(if_ctx *ctx, const char *val __unused, int newflags)
 	struct ifbrparam req;
 
 	if (do_cmd(ctx, BRDGGFLAGS, &req, sizeof(req), 0) < 0)
-		err(1, "BRDGGFLAGS");
+		if_err(1, "BRDGGFLAGS");
 
 	req.ifbrp_flags &= ~(uint32_t)newflags;
 
 	if (do_cmd(ctx, BRDGSFLAGS, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSFLAGS");
+		if_err(1, "BRDGSFLAGS");
 }
 
 static void
@@ -936,10 +878,10 @@ setbridge_defuntagged(if_ctx *ctx, const char *arg, int dummy __unused)
 
 	memset(&req, 0, sizeof(req));
 	if (get_vlan_id(arg, &req.ifbrp_defpvid) < 0)
-		errx(1, "invalid vlan id: %s", arg);
+		if_errx(1, "invalid vlan id: %s", arg);
 
 	if (do_cmd(ctx, BRDGSDEFPVID, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSDEFPVID");
+		if_err(1, "BRDGSDEFPVID");
 }
 
 static void
@@ -951,7 +893,7 @@ unsetbridge_defuntagged(if_ctx *ctx, const char *val __unused, int dummy __unuse
 	req.ifbrp_defpvid = 0;
 
 	if (do_cmd(ctx, BRDGSDEFPVID, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSDEFPVID");
+		if_err(1, "BRDGSDEFPVID");
 }
 
 static void
@@ -979,10 +921,10 @@ setbridge_ifvlanproto(if_ctx *ctx, const char *ifname, const char *proto)
 	else if (strcmp(proto, "802.1ad") == 0)
 		req.ifbr_vlanproto = ETHERTYPE_QINQ;
 	else
-		errx(1, "unrecognised VLAN protocol: %s", proto);
+		if_errx(1, "unrecognised VLAN protocol: %s", proto);
 
 	if (do_cmd(ctx, BRDGSIFVLANPROTO, &req, sizeof(req), 1) < 0)
-		err(1, "BRDGSIFVLANPROTO");
+		if_err(1, "BRDGSIFVLANPROTO");
 }
 
 static struct cmd bridge_cmds[] = {

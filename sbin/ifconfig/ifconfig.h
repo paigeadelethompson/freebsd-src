@@ -251,6 +251,90 @@ struct ifconfig_args {
 	const struct afswtch *afp;	/* AF we're operating on */
 };
 
+static const char	*IFFBITS[] = {
+	"UP",			/* 00:0x1 IFF_UP*/
+	"BROADCAST",		/* 01:0x2 IFF_BROADCAST*/
+	"DEBUG",		/* 02:0x4 IFF_DEBUG*/
+	"LOOPBACK",		/* 03:0x8 IFF_LOOPBACK*/
+	"POINTOPOINT",		/* 04:0x10 IFF_POINTOPOINT*/
+	"NEEDSEPOCH",		/* 05:0x20 IFF_NEEDSEPOCH*/
+	"RUNNING",		/* 06:0x40 IFF_DRV_RUNNING*/
+	"NOARP",		/* 07:0x80 IFF_NOARP*/
+	"PROMISC",		/* 08:0x100 IFF_PROMISC*/
+	"ALLMULTI",		/* 09:0x200 IFF_ALLMULTI*/
+	"DRV_OACTIVE",		/* 10:0x400 IFF_DRV_OACTIVE*/
+	"SIMPLEX",		/* 11:0x800 IFF_SIMPLEX*/
+	"LINK0",		/* 12:0x1000 IFF_LINK0*/
+	"LINK1",		/* 13:0x2000 IFF_LINK1*/
+	"LINK2",		/* 14:0x4000 IFF_LINK2*/
+	"MULTICAST",		/* 15:0x8000 IFF_MULTICAST*/
+	"CANTCONFIG",		/* 16:0x10000 IFF_CANTCONFIG*/
+	"PPROMISC",		/* 17:0x20000 IFF_PPROMISC*/
+	"MONITOR",		/* 18:0x40000 IFF_MONITOR*/
+	"STATICARP",		/* 19:0x80000 IFF_STATICARP*/
+	"STICKYARP",		/* 20:0x100000 IFF_STICKYARP*/
+	"DYING",		/* 21:0x200000 IFF_DYING*/
+	"",			/* 22:0x400000 */
+	"PALLMULTI",		/* 23:0x800000 IFF_PALLMULTI*/
+	"LOWER_UP",		/* 24:0x1000000 IFF_NETLINK_1*/
+};
+
+/* static const char *IFFBITS[] = { */
+/* 	[0]  = "UP", */
+/* 	[1]  = "BROADCAST", */
+/* 	[2]  = "DEBUG", */
+/* 	[3]  = "LOOPBACK", */
+/* 	[4]  = "POINTOPOINT", */
+/* 	[6]  = "RUNNING", */
+/* 	[7]  = "NOARP", */
+/* 	[8]  = "PROMISC", */
+/* 	[9]  = "ALLMULTI", */
+/* 	[10] = "OACTIVE", */
+/* 	[11] = "SIMPLEX", */
+/* 	[12] = "LINK0", */
+/* 	[13] = "LINK1", */
+/* 	[14] = "LINK2", */
+/* 	[15] = "MULTICAST", */
+/* 	[17] = "PPROMISC", */
+/* 	[18] = "MONITOR", */
+/* 	[19] = "STATICARP", */
+/* 	[20] = "STICKYARP", */
+/* }; */
+
+static const char *IFCAPBITS[] = {
+	[0]  = "RXCSUM",
+	[1]  = "TXCSUM",
+	[2]  = "NETCONS",
+	[3]  = "VLAN_MTU",
+	[4]  = "VLAN_HWTAGGING",
+	[5]  = "JUMBO_MTU",
+	[6]  = "POLLING",
+	[7]  = "VLAN_HWCSUM",
+	[8]  = "TSO4",
+	[9]  = "TSO6",
+	[10] = "LRO",
+	[11] = "WOL_UCAST",
+	[12] = "WOL_MCAST",
+	[13] = "WOL_MAGIC",
+	[14] = "TOE4",
+	[15] = "TOE6",
+	[16] = "VLAN_HWFILTER",
+	[18] = "VLAN_HWTSO",
+	[19] = "LINKSTATE",
+	[20] = "NETMAP",
+	[21] = "RXCSUM_IPV6",
+	[22] = "TXCSUM_IPV6",
+	[23] = "HWSTATS",
+	[24] = "TXRTLMT",
+	[25] = "HWRXTSTMP",
+	[26] = "MEXTPG",
+	[27] = "TXTLS4",
+	[28] = "TXTLS6",
+	[29] = "VXLAN_HWCSUM",
+	[30] = "VXLAN_HWTSO",
+	[31] = "TXTLS_RTLMT",
+};
+
 struct option {
 	const char *opt;
 	const char *opt_usage;
@@ -269,9 +353,6 @@ void	setifcap(if_ctx *ctx, const char *, int value);
 void	setifcapnv(if_ctx *ctx, const char *vname, const char *arg);
 
 void	Perror(const char *cmd);
-void	print_bits(const char *btype, uint32_t *v, const int v_count,
-		const char **names, const int n_count);
-void	printb(const char *s, unsigned value, const char *bits);
 
 void	ifmaybeload(struct ifconfig_args *args, const char *name);
 
@@ -290,8 +371,7 @@ bool	group_member(const char *ifname, const char *match, const char *nomatch);
 void	tunnel_status(if_ctx *ctx);
 struct afswtch	*af_getbyfamily(int af);
 void	af_other_status(if_ctx *ctx);
-void	print_ifstatus(if_ctx *ctx);
-void	print_metric(if_ctx *ctx);
+
 ifType	convert_iftype(ifType iftype);
 
 /* Netlink-related functions */
@@ -305,8 +385,6 @@ uint32_t if_nametoindex_nl(struct snl_state *ss, const char *ifname);
  * operations on ifmedia can avoid cmd line ordering confusion.
  */
 struct ifmediareq *ifmedia_getstate(if_ctx *ctx);
-
-void print_vhid(const struct ifaddrs *);
 
 void ifcreate_ioctl(if_ctx *ctx, struct ifreq *ifr);
 

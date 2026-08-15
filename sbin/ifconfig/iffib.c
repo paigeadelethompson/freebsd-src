@@ -42,6 +42,7 @@
 #include <err.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static void
 fib_status(if_ctx *ctx)
@@ -52,13 +53,13 @@ fib_status(if_ctx *ctx)
 	strlcpy(ifr.ifr_name, ctx->ifname, sizeof(ifr.ifr_name));
 	if (ioctl_ctx(ctx, SIOCGIFFIB, (caddr_t)&ifr) == 0 &&
 	    ifr.ifr_fib != RT_DEFAULT_FIB)
-		printf("\tfib: %u\n", ifr.ifr_fib);
+		iffib_print_fib(&ifr);
 
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, ctx->ifname, sizeof(ifr.ifr_name));
 	if (ioctl_ctx(ctx, SIOCGTUNFIB, (caddr_t)&ifr) == 0 &&
 	    ifr.ifr_fib != RT_DEFAULT_FIB)
-		printf("\ttunnelfib: %u\n", ifr.ifr_fib);
+		iffib_print_tunnelfib(&ifr);
 }
 
 static void
@@ -70,11 +71,11 @@ setiffib(if_ctx *ctx, const char *val, int dummy __unused)
 
 	fib = strtoul(val, &ep, 0);
 	if (*ep != '\0' || fib > UINT_MAX)
-		errx(1, "fib %s not valid", val);
+		if_errx(1, "fib %s not valid", val);
 
 	ifr.ifr_fib = fib;
 	if (ioctl_ctx_ifr(ctx, SIOCSIFFIB, &ifr) < 0)
-		err(1, "ioctl (SIOCSIFFIB)");
+		if_err(1, "ioctl (SIOCSIFFIB)");
 }
 
 static void
@@ -86,11 +87,11 @@ settunfib(if_ctx *ctx, const char *val, int dummy __unused)
 
 	fib = strtoul(val, &ep, 0);
 	if (*ep != '\0' || fib > UINT_MAX)
-		errx(1, "fib %s not valid", val);
+		if_errx(1, "fib %s not valid", val);
 
 	ifr.ifr_fib = fib;
 	if (ioctl_ctx_ifr(ctx, SIOCSTUNFIB, &ifr) < 0)
-		err(1, "ioctl (SIOCSTUNFIB)");
+		if_err(1, "ioctl (SIOCSTUNFIB)");
 }
 
 static struct cmd fib_cmds[] = {

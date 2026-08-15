@@ -26,6 +26,7 @@
  * SUCH DAMAGE.
  */
 
+
 #include <sys/param.h>
 #include <sys/ioctl.h>
 #include <sys/nv.h>
@@ -49,49 +50,11 @@
 #include <unistd.h>
 #include <err.h>
 #include <errno.h>
-
+ 
 #include "ifconfig.h"
 #include "ifconfig_netlink.h"
-
-struct nl_parsed_geneve {
-	/* essential */
-	uint32_t			ifla_vni;
-	uint16_t			ifla_proto;
-	struct sockaddr			*ifla_local;
-	struct sockaddr			*ifla_remote;
-	uint16_t			ifla_local_port;
-	uint16_t			ifla_remote_port;
-
-	/* optional */
-	struct ifla_geneve_port_range	*ifla_port_range;
-	enum ifla_geneve_df		ifla_df;
-	uint8_t				ifla_ttl;
-	bool				ifla_ttl_inherit;
-	bool				ifla_dscp_inherit;
-	bool				ifla_external;
-
-	/* l2 specific */
-	bool				ifla_ftable_learn;
-	bool				ifla_ftable_flush;
-	uint32_t			ifla_ftable_max;
-	uint32_t			ifla_ftable_timeout;
-	uint32_t			ifla_ftable_count;
-	uint32_t			ifla_ftable_nospace;
-	uint32_t			ifla_ftable_lock_upgrade_failed;
-
-	/* multicast specific */
-	char				*ifla_mc_ifname;
-	uint32_t			ifla_mc_ifindex;
-
-	/* csum info */
-	uint64_t			ifla_stats_txcsum;
-	uint64_t			ifla_stats_tso;
-	uint64_t			ifla_stats_rxcsum;
-};
-
-static struct geneve_params gnvp = {
-	.ifla_proto		=	GENEVE_PROTO_ETHER,
-};
+#include "ifconfig_output.h" 
+#include "ifgeneve.h"
 
 static int
 get_proto(const char *cp, uint16_t *valp)
@@ -166,7 +129,7 @@ is_multicast(struct addrinfo *ai)
 	}
 #endif
 	default:
-		errx(1, "address family not supported");
+		if_errx(1, "address family not supported");
 	}
 }
 
@@ -180,7 +143,7 @@ setgeneve_mode_clone(if_ctx *ctx __unused, const char *arg, int dummy __unused)
 	uint16_t val;
 
 	if (get_proto(arg, &val) < 0)
-		errx(1, "invalid inner protocol: %s", arg);
+		if_errx(1, "invalid inner protocol: %s", arg);
 
 	gnvp.ifla_proto = val;
 }
@@ -215,10 +178,10 @@ geneve_nl_fini(if_ctx *ctx, struct snl_writer *nw)
 
 	hdr = snl_finalize_msg(nw);
 	if (hdr == NULL || !snl_send_message(ctx->io_ss, hdr))
-		err(1, "unable to send netlink message");
+		if_err(1, "unable to send netlink message");
 
 	if (!snl_read_reply_code(ctx->io_ss, hdr->nlmsg_seq, &errmsg))
-		errx(errmsg.error, "%s", errmsg.error_str);
+		if_errx(errmsg.error, "%s", errmsg.error_str);
 }
 
 #define _OUT(_field)	offsetof(struct nl_parsed_geneve, _field)
@@ -318,21 +281,21 @@ geneve_status_nl(if_ctx *ctx)
 	struct nla_geneve_info geneve_info = geneve_link.linkinfo;
 	struct nl_parsed_geneve geneve_data = geneve_info.data;
 
-	printf("\tgeneve mode: ");
+	ifgeneve_print_mode();
 	switch (geneve_data.ifla_proto) {
 	case GENEVE_PROTO_INHERIT:
-		printf("l3");
+		ifgeneve_print_proto_l3();
 		break;
 	case GENEVE_PROTO_ETHER:
 	default:
-		printf("l2");
+		ifgeneve_print_proto_l2();
 		break;
 	}
 
-	printf("\n\tgeneve config:\n");
+	ifgeneve_print_config();
 	/* Just report nothing if the network identity isn't set yet. */
 	if (geneve_data.ifla_vni >= GENEVE_VNI_MAX) {
-		printf("\t\tvirtual network identifier (vni): not configured\n");
+		ifgeneve_print_config_vni_notconfigured();
 		return;
 	}
 
@@ -358,58 +321,46 @@ geneve_status_nl(if_ctx *ctx)
 		}
 	}
 
-	printf("\t\tvirtual network identifier (vni): %d", geneve_data.ifla_vni);
+	ifgeneve_print_vni(&geneve_data);
 	if (src[0] != '\0')
-		printf("\n\t\tlocal: %s%s%s:%u", ipv6 ? "[" : "", src, ipv6 ? "]" : "",
-		    geneve_data.ifla_local_port);
+		ifgeneve_print_src(ipv6, src, &geneve_data);
 	if (dst[0] != '\0') {
-		printf("\n\t\t%s: %s%s%s:%u", mc ? "group" : "remote", ipv6 ? "[" : "",
-		    dst, ipv6 ? "]" : "", geneve_data.ifla_local_port);
+		ifgeneve_print_dst(mc, ipv6, dst, &geneve_data);
 		if (mc)
-			printf(", dev: %s", geneve_data.ifla_mc_ifname);
+			ifgeneve_print_mcastdev(&geneve_data);
 	}
 
 	if (ctx->args->verbose) {
-		printf("\n\t\tportrange: %u-%u",
-		    geneve_data.ifla_port_range->low,
-		    geneve_data.ifla_port_range->high);
+		ifgeneve_print_portrange(&geneve_data);
 
 		if (geneve_data.ifla_ttl_inherit)
-			printf(", ttl: inherit");
+			ifgeneve_print_ttl_inherit();
 		else
-			printf(", ttl: %d", geneve_data.ifla_ttl);
+			ifgeneve_print_ttl(&geneve_data);
 
 		if (geneve_data.ifla_dscp_inherit)
-			printf(", dscp: inherit");
+			ifgeneve_print_dscp();
 
 		if (geneve_data.ifla_df == IFLA_GENEVE_DF_INHERIT)
-			printf(", df: inherit");
+			ifgeneve_print_df_inherit();
 		else if (geneve_data.ifla_df == IFLA_GENEVE_DF_SET)
-			printf(", df: set");
+			ifgeneve_print_df_set();
 		else if (geneve_data.ifla_df == IFLA_GENEVE_DF_UNSET)
-			printf(", df: unset");
+			ifgeneve_print_df_unset();
 
 		if (geneve_data.ifla_external)
-			printf(", externally controlled");
+			ifgeneve_print_extctl();
 
 		if (geneve_data.ifla_proto == GENEVE_PROTO_ETHER) {
-			printf("\n\t\tftable mode: %slearning",
-			    geneve_data.ifla_ftable_learn ? "" : "no");
-			printf(", count: %d, max: %d, timeout: %d",
-			    geneve_data.ifla_ftable_count,
-			    geneve_data.ifla_ftable_max,
-			    geneve_data.ifla_ftable_timeout);
-			printf(", nospace: %u",
-			    geneve_data.ifla_ftable_nospace);
+			ifgeneve_print_ftable_mode(&geneve_data);
+			ifgeneve_print_ftable(&geneve_data);
+			ifgeneve_print_ftable_nospace(&geneve_data);
 		}
 
-		printf("\n\t\tstats: tso %ju, txcsum %ju, rxcsum %ju",
-		    (uintmax_t)geneve_data.ifla_stats_tso,
-		    (uintmax_t)geneve_data.ifla_stats_txcsum,
-		    (uintmax_t)geneve_data.ifla_stats_rxcsum);
+		ifgeneve_print_stats(&geneve_data);
 	}
 
-	putchar('\n');
+	ifconfig_print_newline();
 }
 
 
@@ -533,11 +484,11 @@ setgeneve_group_nl(if_ctx *ctx, const char *addr, int dummy __unused)
 	int error;
 
 	if ((error = getaddrinfo(addr, NULL, NULL, &ai)) != 0)
-		errx(1, "error in parsing local address string: %s",
+		if_errx(1, "error in parsing local address string: %s",
 		    gai_strerror(error));
 
 	if (!is_multicast(ai))
-		errx(1, "group address must be multicast");
+		if_errx(1, "group address must be multicast");
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);
@@ -563,7 +514,7 @@ setgeneve_local_port_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val >= UINT16_MAX)
-		errx(1, "invalid local port: %s", arg);
+		if_errx(1, "invalid local port: %s", arg);
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);
@@ -587,7 +538,7 @@ setgeneve_remote_port_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || val >= UINT16_MAX)
-		errx(1, "invalid remote port: %s", arg);
+		if_errx(1, "invalid remote port: %s", arg);
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);
@@ -611,11 +562,11 @@ setgeneve_port_range_nl(if_ctx *ctx, const char *arg1, const char *arg2)
 	u_long min, max;
 
 	if (get_val(arg1, &min) < 0 || min >= UINT16_MAX)
-		errx(1, "invalid port range minimum: %s", arg1);
+		if_errx(1, "invalid port range minimum: %s", arg1);
 	if (get_val(arg2, &max) < 0 || max >= UINT16_MAX)
-		errx(1, "invalid port range maximum: %s", arg2);
+		if_errx(1, "invalid port range maximum: %s", arg2);
 	if (max < min)
-		errx(1, "invalid port range");
+		if_errx(1, "invalid port range");
 
 	const struct ifla_geneve_port_range port_range = {
 		.low = min,
@@ -645,7 +596,7 @@ setgeneve_timeout_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xFFFFFFFF) != 0)
-		errx(1, "invalid timeout value: %s", arg);
+		if_errx(1, "invalid timeout value: %s", arg);
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);
@@ -669,7 +620,7 @@ setgeneve_maxaddr_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	u_long val;
 
 	if (get_val(arg, &val) < 0 || (val & ~0xFFFFFFFF) != 0)
-		errx(1, "invalid maxaddr value: %s",  arg);
+		if_errx(1, "invalid maxaddr value: %s",  arg);
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);
@@ -723,7 +674,7 @@ setgeneve_ttl_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	} else if (!strcmp(arg, "inherit")) {
 		snl_add_msg_attr_bool(&nw, IFLA_GENEVE_TTL_INHERIT, true);
 	} else
-		errx(1, "invalid TTL value: %s", arg);
+		if_errx(1, "invalid TTL value: %s", arg);
 
 	snl_end_attr_nested(&nw, off2);
 	snl_end_attr_nested(&nw, off);
@@ -739,7 +690,7 @@ setgeneve_df_nl(if_ctx *ctx, const char *arg, int dummy __unused)
 	enum ifla_geneve_df df;
 
 	if (get_df(arg, &df) < 0)
-		errx(1, "invalid df value: %s", arg);
+		if_errx(1, "invalid df value: %s", arg);
 
 	geneve_nl_init(ctx, &nw, 0);
 	off = snl_add_msg_attr_nested(&nw, IFLA_LINKINFO);

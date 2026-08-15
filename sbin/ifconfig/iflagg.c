@@ -26,6 +26,8 @@
 #include <libifconfig.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
+#include "iflagg.h"
 
 static struct iflaggparam params = {
 	.lagg_type = LAGG_TYPE_DEFAULT,
@@ -48,7 +50,7 @@ setlaggport(if_ctx *ctx, const char *val, int dummy __unused)
 	 * Don't error at all if the port is already in the lagg.
 	 */
 	if (ioctl_ctx(ctx, SIOCSLAGGPORT, &rp) && errno != EEXIST) {
-		warnx("%s %s: SIOCSLAGGPORT: %s",
+		if_warnx("%s %s: SIOCSLAGGPORT: %s",
 		    ctx->ifname, val, strerror(errno));
 		exit_code = 1;
 	}
@@ -63,7 +65,7 @@ unsetlaggport(if_ctx *ctx, const char *val, int dummy __unused)
 	strlcpy(rp.rp_portname, val, sizeof(rp.rp_portname));
 
 	if (ioctl_ctx(ctx, SIOCSLAGGDELPORT, &rp))
-		err(1, "SIOCSLAGGDELPORT");
+		if_err(1, "SIOCSLAGGDELPORT");
 }
 
 static void
@@ -82,11 +84,11 @@ setlaggproto(if_ctx *ctx, const char *val, int dummy __unused)
 		}
 	}
 	if (ra.ra_proto == LAGG_PROTO_MAX)
-		errx(1, "Invalid aggregation protocol: %s", val);
+		if_errx(1, "Invalid aggregation protocol: %s", val);
 
 	strlcpy(ra.ra_ifname, ctx->ifname, sizeof(ra.ra_ifname));
 	if (ioctl_ctx(ctx, SIOCSLAGG, &ra) != 0)
-		err(1, "SIOCSLAGG");
+		if_err(1, "SIOCSLAGG");
 }
 
 static void
@@ -98,10 +100,10 @@ setlaggflowidshift(if_ctx *ctx, const char *val, int dummy __unused)
 	strlcpy(ro.ro_ifname, ctx->ifname, sizeof(ro.ro_ifname));
 	ro.ro_flowid_shift = (int)strtol(val, NULL, 10);
 	if (ro.ro_flowid_shift & ~LAGG_OPT_FLOWIDSHIFT_MASK)
-		errx(1, "Invalid flowid_shift option: %s", val);
+		if_errx(1, "Invalid flowid_shift option: %s", val);
 	
 	if (ioctl_ctx(ctx, SIOCSLAGGOPTS, &ro) != 0)
-		err(1, "SIOCSLAGGOPTS");
+		if_err(1, "SIOCSLAGGOPTS");
 }
 
 static void
@@ -113,10 +115,10 @@ setlaggrr_limit(if_ctx *ctx, const char *val, int dummy __unused)
 	ro.ro_opts = LAGG_OPT_RR_LIMIT;
 	ro.ro_bkt = (uint32_t)strtoul(val, NULL, 10);
 	if (ro.ro_bkt == 0)
-		errx(1, "Invalid round-robin stride: %s", val);
+		if_errx(1, "Invalid round-robin stride: %s", val);
 
 	if (ioctl_ctx(ctx, SIOCSLAGGOPTS, &ro) != 0)
-		err(1, "SIOCSLAGGOPTS");
+		if_err(1, "SIOCSLAGGOPTS");
 }
 
 static void
@@ -140,12 +142,12 @@ setlaggsetopt(if_ctx *ctx, const char *val __unused, int d)
 	case -LAGG_OPT_LACP_FAST_TIMO:
 		break;
 	default:
-		err(1, "Invalid lagg option");
+		if_err(1, "Invalid lagg option");
 	}
 	strlcpy(ro.ro_ifname, ctx->ifname, sizeof(ro.ro_ifname));
 	
 	if (ioctl_ctx(ctx, SIOCSLAGGOPTS, &ro) != 0)
-		err(1, "SIOCSLAGGOPTS");
+		if_err(1, "SIOCSLAGGOPTS");
 }
 
 static void
@@ -165,15 +167,15 @@ setlagghash(if_ctx *ctx, const char *val, int dummy __unused)
 		else if (strcmp(tok, "l4") == 0)
 			rf.rf_flags |= LAGG_F_HASHL4;
 		else
-			errx(1, "Invalid lagghash option: %s", tok);
+			if_errx(1, "Invalid lagghash option: %s", tok);
 	}
 	free(str);
 	if (rf.rf_flags == 0)
-		errx(1, "No lagghash options supplied");
+		if_errx(1, "No lagghash options supplied");
 
 	strlcpy(rf.rf_ifname, ctx->ifname, sizeof(rf.rf_ifname));
 	if (ioctl_ctx(ctx, SIOCSLAGGHASH, &rf))
-		err(1, "SIOCSLAGGHASH");
+		if_err(1, "SIOCSLAGGHASH");
 }
 
 static char *
@@ -186,7 +188,7 @@ lacp_format_mac(const uint8_t *mac, char *buf, size_t buflen)
 	return (buf);
 }
 
-static char *
+char *
 lacp_format_peer(struct lacp_opreq *req, const char *sep)
 {
 	char macbuf1[20];
@@ -232,53 +234,51 @@ lagg_status(if_ctx *ctx)
 			break;
 		}
 	}
-	printf("\tlaggproto %s", proto);
+	iflagg_print_laggproto(proto);
 
 	if (rf->rf_flags & LAGG_F_HASHMASK) {
 		const char *sep = "";
 
-		printf(" lagghash ");
+		iflagg_print_lagghash();
 		if (rf->rf_flags & LAGG_F_HASHL2) {
-			printf("%sl2", sep);
+			iflagg_print_l2(sep);
 			sep = ",";
 		}
 		if (rf->rf_flags & LAGG_F_HASHL3) {
-			printf("%sl3", sep);
+			iflagg_print_l3(sep);
 			sep = ",";
 		}
 		if (rf->rf_flags & LAGG_F_HASHL4) {
-			printf("%sl4", sep);
+			iflagg_print_l4(sep);
 			sep = ",";
 		}
 	}
-	putchar('\n');
+	ifconfig_print_newline();
 	if (verbose) {
-		printf("\tlagg options:\n");
-		printb("\t\tflags", ro->ro_opts, LAGG_OPT_BITS);
-		putchar('\n');
-		printf("\t\tflowid_shift: %d\n", ro->ro_flowid_shift);
+		iflagg_print_options();
+		ifconfig_printb("\t\tflags", ro->ro_opts, LAGG_OPT_BITS);
+		ifconfig_print_newline();
+		iflagg_print_flowid_shift(ro);
 		if (ra->ra_proto == LAGG_PROTO_ROUNDROBIN)
-			printf("\t\trr_limit: %d\n", ro->ro_bkt);
-		printf("\tlagg statistics:\n");
-		printf("\t\tactive ports: %d\n", ro->ro_active);
-		printf("\t\tflapping: %u\n", ro->ro_flapping);
+			iflagg_print_trr_limit(ro);
+		iflagg_print_statistics();
+		iflagg_print_active_ports(ro);
+		iflagg_print_flapping(ro);
 		if (ra->ra_proto == LAGG_PROTO_LACP) {
 			lp = &ra->ra_lacpreq;
-			printf("\tlag id: %s\n",
-			    lacp_format_peer(lp, "\n\t\t "));
+			iflagg_print_lagg_id(lp);
 		}
 	}
 
 	for (size_t i = 0; i < (size_t)ra->ra_ports; ++i) {
 		lp = &ports[i].rp_lacpreq;
-		printf("\tlaggport: %s ", ports[i].rp_portname);
-		printb("flags", ports[i].rp_flags, LAGG_PORT_BITS);
+		iflagg_print_laggport(&ports[i]);
+		ifconfig_printb("flags", ports[i].rp_flags, LAGG_PORT_BITS);
 		if (verbose && ra->ra_proto == LAGG_PROTO_LACP)
-			printb(" state", lp->actor_state, LACP_STATE_BITS);
-		putchar('\n');
+			ifconfig_printb(" state", lp->actor_state, LACP_STATE_BITS);
+		ifconfig_print_newline();
 		if (verbose && ra->ra_proto == LAGG_PROTO_LACP)
-			printf("\t\t%s\n",
-			    lacp_format_peer(lp, "\n\t\t "));
+			iflagg_print_peer(lp);
 	}
 
 	ifconfig_lagg_free_lagg_status(lagg);
@@ -295,7 +295,7 @@ setlaggtype(if_ctx *ctx __unused, const char *arg, int dummy __unused)
 			return;
 		}
 	}
-	errx(1, "invalid lagg type: %s", arg);
+	if_errx(1, "invalid lagg type: %s", arg);
 }
 
 static void

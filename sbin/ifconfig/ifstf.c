@@ -52,6 +52,7 @@
 #include <errno.h>
 
 #include "ifconfig.h"
+#include "ifconfig_output.h"
 
 static int
 do_cmd(if_ctx *ctx, u_long op, void *arg, size_t argsize, int set)
@@ -74,9 +75,9 @@ stf_status(if_ctx *ctx)
 	if (do_cmd(ctx, STF6RD_GV4NET, &param, sizeof(param), 0) < 0)
 		return;
 
-	printf("\tv4net %s/%d -> ", inet_ntoa(param.srcv4_addr),
-	    param.v4_prefixlen ? param.v4_prefixlen : 32);
-	printf("tv4br %s\n", inet_ntoa(param.braddr));
+	ifstf_print_v4net(&param);
+	// XXX should this be \t4br instead of tv4br?
+	ifstf_print_tv4br(&param);
 }
 
 static void
@@ -91,11 +92,11 @@ setstf_br(if_ctx *ctx, const char *val, int d __unused)
 	sin.sin_family = AF_INET;
 
 	if (!inet_aton(val, &sin.sin_addr))
-		errx(1, "%s: bad value", val);
+		if_errx(1, "%s: bad value", val);
 
 	req.braddr = sin.sin_addr;
 	if (do_cmd(ctx, STF6RD_SBR, &req, sizeof(req), 1) < 0)
-		err(1, "STF6RD_SBR%s",  val);
+		if_err(1, "STF6RD_SBR%s",  val);
 }
 
 static void
@@ -113,21 +114,21 @@ setstf_set(if_ctx *ctx, const char *val, int d __unused)
 
 	p = strrchr(val, '/');
 	if (p == NULL)
-		errx(2, "Wrong argument given");
+		if_errx(2, "Wrong argument given");
 
 	*p = '\0';
 	req.v4_prefixlen = (int)strtonum(p + 1, 0, 32, &errstr);
 	if (errstr != NULL || req.v4_prefixlen == 0) {
 		*p = '/';
-		errx(1, "%s: bad value (prefix length %s)", val, errstr);
+		if_errx(1, "%s: bad value (prefix length %s)", val, errstr);
 	}
 
 	if (!inet_aton(val, &sin.sin_addr))
-		errx(1, "%s: bad value", val);
+		if_errx(1, "%s: bad value", val);
 
 	memcpy(&req.srcv4_addr, &sin.sin_addr, sizeof(req.srcv4_addr));
 	if (do_cmd(ctx, STF6RD_SV4NET, &req, sizeof(req), 1) < 0)
-		err(1, "STF6RD_SV4NET %s",  val);
+		if_err(1, "STF6RD_SV4NET %s",  val);
 }
 
 static struct cmd stf_cmds[] = {
