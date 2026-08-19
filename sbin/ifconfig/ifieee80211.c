@@ -3193,6 +3193,7 @@ list_wme_aci(if_ctx *ctx, const char *tag, int ac)
 {
 	int val;
 
+	ifconfig_print_tab();
 	ifieee80211_print_list_wme_aci_tag(tag);
 
 	/* show WME BSS parameters */
