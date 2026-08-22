@@ -85,22 +85,17 @@ getifgroups(if_ctx *ctx)
 		return;
 
 	cnt = 0;
-	ifconfig_open_list("groups");
 	for (size_t i = 0; i < ifgr.ifgr_len / sizeof(struct ifg_req); ++i) {
 		struct ifg_req *ifg = &ifgr.ifgr_groups[i];
 
 		if (strcmp(ifg->ifgrq_group, "all")) {
-			if (cnt == 0)
-				ifgroup_print_groups();
-			cnt++;
-			ifconfig_open_instance("group");
+			if (cnt++ == 0)
+				ifgroup_open_groups();
 			ifgroup_print_group(ifg);
-			ifconfig_close_instance("group");
 		}
 	}
-	ifconfig_close_list("groups");
-	if (cnt)
-		ifconfig_print_newline();
+	if (cnt > 0)
+		ifgroup_close_groups();
 
 	free(ifgr.ifgr_groups);
 }

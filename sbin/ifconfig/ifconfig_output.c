@@ -3797,10 +3797,49 @@ ifgroup_print_groups(void)
 }
 
 void
+ifgroup_open_groups(void)
+{
+#ifdef WITH_LIBXO
+	if (xo_get_style(NULL) == XO_STYLE_XML) {
+		ifconfig_open_container("groups");
+		return;
+	}
+	ifconfig_open_list("groups");
+#endif
+	ifgroup_print_groups();
+}
+
+void
+ifgroup_close_groups(void)
+{
+#ifdef WITH_LIBXO
+	switch (xo_get_style(NULL)) {
+	case XO_STYLE_XML:
+		ifconfig_close_container("groups");
+		return;
+	case XO_STYLE_TEXT:
+		break;
+	default:
+		ifconfig_close_list("groups");
+		return;
+	}
+#endif
+	ifconfig_print_newline();
+}
+
+void
 ifgroup_print_group(struct ifg_req *ifg)
 {
 #ifdef WITH_LIBXO
-	xo_emit(" {:name/%s}", ifg->ifgrq_group);
+	switch (xo_get_style(NULL)) {
+	case XO_STYLE_XML:
+		xo_emit("{:group/%s}", ifg->ifgrq_group);
+		return;
+	case XO_STYLE_JSON:
+		xo_emit("{le:group/%s}", ifg->ifgrq_group);
+		return;
+	}
+	xo_emit("{P: }{:name/%s}", ifg->ifgrq_group);
 #else
 	printf(" %s", ifg->ifgrq_group);
 #endif

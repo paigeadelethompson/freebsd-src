@@ -192,6 +192,8 @@ void ifgre_print_key(uint32_t opts);
 void ifgre_print_udpport(uint32_t port);
 void ifgre_print_options(uint32_t opts);
 
+void ifgroup_open_groups(void);
+void ifgroup_close_groups(void);
 void ifgroup_print_groups(void);
 void ifgroup_print_group(struct ifg_req *ifg);
 
