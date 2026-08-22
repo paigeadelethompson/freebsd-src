@@ -376,7 +376,7 @@ status_nl(if_ctx *ctx, struct iface *iface)
 
 	ifconfig_print_ifstatus(ctx);
 
-	if (args->drivername || args->verbose) {
+	if (!ifconfig_style_is_text() || args->drivername || args->verbose) {
 		if (ifconfig_get_orig_name(lifh, link->ifla_ifname,
 		    &drivername) != 0) {
 			if (ifconfig_err_errtype(lifh) == OTHER)

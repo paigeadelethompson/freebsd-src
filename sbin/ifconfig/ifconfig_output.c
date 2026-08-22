@@ -403,6 +403,16 @@ ifconfig_close_instance(const char *name __unused)
 #endif
 }
 
+bool
+ifconfig_style_is_text(void)
+{
+#ifdef WITH_LIBXO
+	return (xo_get_style(NULL) == XO_STYLE_TEXT);
+#else
+	return (true);
+#endif
+}
+
 #ifdef WITHOUT_NETLINK
 void
 ifconfig_print_ifcap_nv(if_ctx *ctx)

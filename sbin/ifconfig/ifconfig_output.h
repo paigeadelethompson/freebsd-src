@@ -72,6 +72,7 @@ void ifconfig_open_list(const char *name);
 void ifconfig_close_list(const char *name);
 void ifconfig_open_instance(const char *name);
 void ifconfig_close_instance(const char *name);
+bool ifconfig_style_is_text(void);
 void ifconfig_print_ifcap_nv(if_ctx *ctx);
 void ifconfig_print_ifcap(if_ctx *ctx);
 void ifconfig_print_ifstatus(if_ctx *ctx);
