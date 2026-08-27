@@ -248,6 +248,9 @@ struct ifconfig_args {
 	const char *ifname;	/* Requested interface name */
 	const char *matchgroup;		/* Group name to match */
 	const char *nogroup;		/* Group name to exclude */
+	const char *restore_file;	/* --restore XML file */
+	bool restore_pretend;		/* --pretend */
+	bool restore_force;		/* --force */
 	const struct afswtch *afp;	/* AF we're operating on */
 };
 
@@ -369,6 +372,7 @@ bool	match_if_flags(struct ifconfig_args *args, int if_flags);
 int	ifconfig_ioctl(if_ctx *ctx, int iscreate, const struct afswtch *uafp);
 bool	group_member(const char *ifname, const char *match, const char *nomatch);
 void	tunnel_status(if_ctx *ctx);
+struct afswtch	*af_getbyname(const char *name);
 struct afswtch	*af_getbyfamily(int af);
 void	af_other_status(if_ctx *ctx);
 

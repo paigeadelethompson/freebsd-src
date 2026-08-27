@@ -3474,10 +3474,17 @@ if_errx(int eval, const char *fmt, ...)
 void
 if_warn(const char *fmt, ...)
 {
+	char buf[1024];
 	va_list ap;
 	va_start(ap, fmt);
 #ifdef WITH_LIBXO
-	xo_emit_warn_hcv(NULL, 1, errno, fmt, ap);
+	/*
+	 * xo_emit_warn_hcv() expects an xo format string and would render
+	 * printf conversions as literal text.  Flatten the message and use
+	 * the printf-style xo_warn family instead.
+	 */
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	xo_warn("%s", buf);
 #else
 	vwarn(fmt, ap);
 #endif
@@ -3488,10 +3495,12 @@ void
 if_warnc(int cond, int code, const char *fmt, ...)
 {
 	if (cond) {
+		char buf[1024];
 		va_list ap;
 		va_start(ap, fmt);
 #ifdef WITH_LIBXO
-		xo_emit_warn_hcv(NULL, 1, code, fmt, ap);
+		vsnprintf(buf, sizeof(buf), fmt, ap);
+		xo_warn_c(code, "%s", buf);
 #else
 		vwarnc(code, fmt, ap);
 #endif
@@ -3502,10 +3511,12 @@ if_warnc(int cond, int code, const char *fmt, ...)
 void
 if_warnx(const char *fmt, ...)
 {
+	char buf[1024];
 	va_list ap;
 	va_start(ap, fmt);
 #ifdef WITH_LIBXO
-	xo_emit_warn_hcv(NULL, 1, -1, fmt, ap);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	xo_warnx("%s", buf);
 #else
 	vwarnx(fmt, ap);
 #endif
@@ -3852,6 +3863,27 @@ ifgroup_print_group(struct ifg_req *ifg)
 	xo_emit("{P: }{:name/%s}", ifg->ifgrq_group);
 #else
 	printf(" %s", ifg->ifgrq_group);
+#endif
+}
+
+void
+ifconfigxml_print_command(struct ifconfig_args *args)
+{
+#ifdef WITH_LIBXO
+	/* Display-only: pretend output is a shell command line, not data */
+	xo_emit("{P:/ifconfig %s}", args->ifname);
+	if (args->afp != NULL && args->afp->af_name != NULL)
+		xo_emit("{P:/ %s}", args->afp->af_name);
+	for (int i = 0; i < args->argc; i++)
+		xo_emit("{P:/ %s}", args->argv[i]);
+	xo_emit("{P:\n}");
+#else
+	printf("ifconfig %s", args->ifname);
+	if (args->afp != NULL && args->afp->af_name != NULL)
+		printf(" %s", args->afp->af_name);
+	for (int i = 0; i < args->argc; i++)
+		printf(" %s", args->argv[i]);
+	printf("\n");
 #endif
 }
 

@@ -44,9 +44,13 @@ SRCS+=	../../ifclone.c \
 SRCS+=	../../ifieee80211.c
 .endif
 SRCS+=	../../carp.c \
-	../../ifgroup.c
+	../../ifgroup.c \
+	../../ifconfig_xml.c
 .if ${MK_PF} != "no"
 SRCS+=	../../ifpfsync.c
+.endif
+.if ${WITH_BSDXML:U0} != "0"
+SRCS+=	../../ifconfig_xml.c
 .endif
 SRCS+=	../../ifbridge.c \
 	../../iflagg.c \
@@ -72,7 +76,11 @@ CFLAGS+=	-DWITHOUT_NETLINK
 CFLAGS+=	-Wall -Wmissing-prototypes -Wcast-qual -Wwrite-strings \
 	    -Wnested-externs
 
+.if ${WITH_BSDXML:U0} != "0"
+LIBADD+=	ifconfig m util xo nv bsdxml
+.else
 LIBADD+=	ifconfig m util xo nv
+.endif
 .if ${MK_WIRELESS_SUPPORT} != "no"
 LIBADD+=	80211
 .endif

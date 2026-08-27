@@ -35,7 +35,11 @@ SRCS+=	ifgif.c			# GIF reversed header workaround
 SRCS+=	ifipsec.c		# IPsec VTI
 
 SRCS+=	sfp.c			# SFP/SFP+ information
+.if ${CFLAGS:M*WITH_BSDXML*}
+LIBADD+=	ifconfig m util xo bsdxml
+.else
 LIBADD+=	ifconfig m util xo
+.endif
 CFLAGS+=	-I${SRCTOP}/lib/libifconfig -I${OBJTOP}/lib/libifconfig
 
 .if ${MK_WIRELESS_SUPPORT} != "no"
@@ -45,6 +49,9 @@ LIBADD+=	80211
 
 SRCS+=	carp.c			# SIOC[GS]VH support
 SRCS+=	ifgroup.c		# ...
+.if ${CFLAGS:M*WITH_BSDXML*} != ""
+SRCS+=	ifconfig_xml.c		# XML restore support
+.endif
 .if ${MK_PF} != "no"
 SRCS+=	ifpfsync.c		# pfsync(4) support
 .endif

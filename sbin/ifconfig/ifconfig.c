@@ -73,6 +73,7 @@
 
 #include "ifconfig.h"
 #include "ifconfig_output.h"
+#include "ifconfig_xml.h"
 
 ifconfig_handle_t *lifh;
 
@@ -100,8 +101,6 @@ static _Noreturn void usage(void);
 static void Perrorc(const char *cmd, int error);
 
 static int getifflags(const char *ifname, int us, bool err_ok);
-
-static struct afswtch *af_getbyname(const char *name);
 
 static struct option *opts = NULL;
 
@@ -178,7 +177,8 @@ usage(void)
 	"       ifconfig" JFLAG "interface create\n"
 	"       ifconfig" JFLAG "-a %s[-d] [-m] [-u] [-v] [address_family]\n"
 	"       ifconfig" JFLAG "-l [-d] [-u] [address_family]\n"
-	"       ifconfig" JFLAG "%s[-d] [-m] [-u] [-v]\n",
+	"       ifconfig" JFLAG "%s[-d] [-m] [-u] [-v]\n"
+	"       ifconfig" JFLAG "[-F] [-P] -r <file>\n",
 		options, options, options);
 	exit(1);
 #undef	JFLAG
@@ -467,7 +467,7 @@ args_parse(struct ifconfig_args *args, int argc, char *argv[])
 	int c;
 
 	/* Parse leading line options */
-	strlcpy(options, "G:adDf:j:klmnuv", sizeof(options));
+	strlcpy(options, "G:adDFf:j:klmnPr:uv", sizeof(options));
 	for (p = opts; p != NULL; p = p->next)
 		strlcat(options, p->opt, sizeof(options));
 	while ((c = getopt(argc, argv, options)) != -1) {
@@ -480,6 +480,17 @@ args_parse(struct ifconfig_args *args, int argc, char *argv[])
 			break;
 		case 'D':	/* Print driver name */
 			args->drivername = true;
+			break;
+		case 'F':	/* Force restore: destroy/recreate */
+			args->restore_force = true;
+			break;
+		case 'P':	/* Restore dry-run */
+			args->restore_pretend = true;
+			break;
+		case 'r':
+			if (optarg == NULL)
+				usage();
+			args->restore_file = optarg;
 			break;
 		case 'f':
 			if (optarg == NULL)
@@ -550,6 +561,10 @@ args_parse(struct ifconfig_args *args, int argc, char *argv[])
 
 	/* nonsense.. */
 	if (args->uponly && args->downonly)
+		usage();
+
+	if ((args->restore_pretend || args->restore_force) &&
+	    args->restore_file == NULL)
 		usage();
 
 	/* no arguments is equivalent to '-a' */
@@ -641,6 +656,11 @@ main(int ac, char *av[])
 	atexit(ifconfig_printifnamemaybe);
 	atexit(ifconfig_finish);
 	args_parse(args, ac, av);
+
+	#if defined(WITH_BSDXML)
+	if (args->restore_file != NULL)
+		exit(ifconfig_xml_restore(args));
+#endif
 
 	ifconfig_open_container("ifconfig");
 
@@ -931,7 +951,7 @@ af_register(struct afswtch *p)
 	afs = p;
 }
 
-static struct afswtch *
+struct afswtch *
 af_getbyname(const char *name)
 {
 	struct afswtch *afp;

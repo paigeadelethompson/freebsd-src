@@ -198,6 +198,8 @@ void ifgroup_close_groups(void);
 void ifgroup_print_groups(void);
 void ifgroup_print_group(struct ifg_req *ifg);
 
+void ifconfigxml_print_command(struct ifconfig_args *args);
+
 void ifipsec_print_reqid(uint32_t reqid);
 
 void iflagg_print_laggproto(const char *proto);
