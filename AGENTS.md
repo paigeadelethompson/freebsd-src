@@ -66,10 +66,15 @@ the three new clients and the FN-key filter uncommitted):
   (keyboard/touchpad/aux), ENOENT past end.
 - `sys/dev/surface/surface_sam_uart.{h,c}` — minimal 16550 backend: takes a
   parsed `struct sam_uart_config` (iobase/nports/irq/trigger/polarity/baud/
-  rclk/lcr/hwflow), synchronous `sam_uart_tx()` (busy-waits THRE via
-  `DELAY(10)`, 2 s cap → EIO), RX via IRQ thread (`INTR_TYPE_TTY |
-  INTR_MPSAFE`, no filter) with a 1-tick callout poll fallback when no IRQ
-  is available. Divisor math defaults: rclk 1843200, baud 115200.
+  rclk/base_freq/lcr/hwflow), synchronous `sam_uart_tx()` (busy-waits THRE,
+  bounded by an iteration count rather than by `ticks`, because the clock
+  does not run during cold boot), RX via IRQ thread (`INTR_TYPE_TTY |
+  INTR_MPSAFE`, no filter). **No polling fallback**: at 4 MBd a 1-tick poll
+  cannot drain the receive FIFO, so without an interrupt there is no
+  attach. `sam_uart_lpss_init()` brings an Intel LPSS UART up (below),
+  `sam_uart_lpss_set_clock()` scales it to 16x the requested baud, and the
+  divisor falls back to the integer divisor when the core has no fractional
+  latch, warning loudly when the resulting rate is wrong.
 - `sys/dev/surface/surface_sam.c` — ACPI probe/attach on `MSHW0084`
   (probe returns `BUS_PROBE_DEFAULT + 1` to out-rank `uart(4)`: in
   `device_probe_child` the probe result *closest to 0* wins, so -19 beats
@@ -168,18 +173,105 @@ the three new clients and the FN-key filter uncommitted):
   The touchpad (iid 3) is skipped — its buttons are real input. AUX node
   (iid 5) is still created but has no known consumer.
 
-Known risks to check first on real hardware: whether `MSHW0084` has a
-PNP0501 CID (then `uart(4)` probes first and its probe-time I/O
-allocation is *not* released when it loses the auction → our attach would
-fail EBUSY), the actual `_CRS` contents/IRQ, and the UART reference clock
-(override with `hw.surface_sam.rclk` if the divisor computes to 0).
-Also unverified: EC status for flagless requests (late/mismatched response
+Still unverified: EC status for flagless requests (late/mismatched response
 frames are dropped by the rqid guard, but a non-zero ACK-era status byte is
 not available for them). Unverified for the new clients: whether the EC
 answers the TMP profile get/set on SL4 at all (profile values 1..4 assumed
 from upstream), whether the fan answers on the 13" model, and whether the
 FN-key usage is really button 0x100 in the descriptor (the filter simply
 finds nothing and does nothing if the firmware uses a different usage).
+Also: the transport has no suspend/resume, while the firmware says it
+closes the UART in D3 (`SSH._DSM` fn 8, and UA00's `_PS0` is empty), so
+after S3 the link is dead until the module is reloaded.
+
+
+## Bring-up log: the LPSS UART comes alive (2026-10-02)
+
+Transport bring-up committed as `79d3eeaa6c92`.  First boot where the whole
+window resolves, the controller comes out of reset, the baud rate comes out
+exactly right and the interrupt is actually wired up:
+
+```
+surface_sam0: <Microsoft Surface Serial Hub (SAM)> on acpi0
+surface_sam0: _CRS: uart baud 4000000 hwflow 1 lcr 0x3, controller \_SB.PCI0.UA00
+surface_sam0: _CRS: resource type 17
+surface_sam0: _CRS: resource type 17
+surface_sam0: _CRS: resource type 7
+surface_sam0: following resource source \_SB.PCI0.UA00
+surface_sam0: \_SB.PCI0.UA00: no window in _CRS, trying its pci function
+surface_sam0: \_SB.PCI0.UA00: ADR 0x1e0000 -> bus 0 slot 0x1e func 0
+surface_sam0: \_SB.PCI0.UA00: BAR 0 has no base; the bus will assign it
+surface_sam0: \_SB.PCI0.UA00: intpin 1, intline 255
+surface_sam0: \_SB.PCI0.UA00: using BAR 0 at 00:1e.0, reference clock 120000000 Hz
+surface_sam0: _CRS asks for hw flow control, leaving it off (hw.surface_sam.hwflow=1 to enable)
+surface_sam0: resolved window: memory BAR 0 on the uart function
+surface_sam0: resolved irq: from the pci bus (trigger and polarity come from its routing)
+surface_sam0: resolved line: baud 4000000 lcr 0x3 hwflow 0
+pcib0: allocated type 3 (0x95500000-0x95500fff) for rid 10 of pci0:0:30:0
+unknown: Lazy allocation of 0x1000 bytes rid 0x10 type 3 at 0x95500000
+surface_sam0: window memory 0x95500000-0x95500fff (4096 bytes)
+surface_sam0: lpss clock register 0, base 120000000 Hz
+surface_sam0: lpss uart out of reset (caps 0x10, resets 0x7, clock 120000000 Hz)
+pcib0: matched entry for 0.30.INTA
+pcib0: slot 30 INTA hardwired to IRQ 20
+surface_sam0: interrupt 20, routed by the pci bus
+surface_sam0: fractional divisor latch 0xc0: read 0 with all ones written
+surface_sam0: clock set to 64000000 Hz (ratio 8/15)
+surface_sam0: uart @ 0x95500000, 32-bit regs (shift 2), baud 4000000 (div 1 of rclk 64000000 = 4000000), no hwflow
+ioapic0: routing intpin 20 (PCI IRQ 20) to lapic 6 vector 51
+surface_sam0: failed to get SAM firmware version (error 60)
+device_attach: surface_sam0 attach returned 6
+acpi_lid0: <Control Method Lid Switch> on acpi0
+```
+
+What each of those lines establishes, in the order the problems were found:
+
+1. `ADR 0x1e0000` → 00:1e.0.  The firmware encodes the PCI function in the
+   *low* byte of `_ADR` (UA01 = 0x001E0001, UA02 = 0x00190002), which breaks
+   the spec's "bits 15:8 = function, bits 7:0 = 0".  Decode the spec field
+   first and fall back to the low byte.
+2. `BAR 0 has no base` → the bus assigns it.  The firmware never programs
+   the LPSS BARs; `pci_alloc_resource()` falls through to
+   `pci_reserve_map()`, which sizes the BAR, reserves a range and writes it.
+   A zero BAR is not an error, it just has to be requested.
+3. UA00 has **no `_CRS` at all** (only `_DSM`, `_ADR`, `_PS3`, `_PS0`), so the
+   window can only come from the PCI BAR.  `_PS3` is `SOD3(UC00, One, One)`
+   and `_PS0` is empty: the firmware puts the block in a low power state and
+   never restores it, so the driver has to program it itself.
+4. `reference clock 120000000 Hz` → the PCI device id matters.  This function
+   is `0x34a8` ("Ice Lake-LP Serial IO UART Controller"), which the reference
+   driver puts in the *Sunrisepoint* group at **120 MHz**; 100 MHz is the Bay
+   Trail/Tiger Lake group.  4 MBd off 120 MHz is 1.875, not a divisor.
+5. `lpss uart out of reset (caps 0x10, resets 0x7)` → the additional
+   register block at 0x200 in the BAR is real and writable.  It is programmed
+   exactly as the PCH documentation of that block describes it: reset pulse,
+   then release functional and iDMA (0x204 = FUNC|IDMA), then a **single 32
+   bit** write of the window address to 0x240.  (An 64 bit write there spills
+   into 0x244 and knocks the block back into reset — that is what produced
+   an `internal timer error` machine check.)
+6. `fractional divisor latch 0xc0: read 0` → this core has no fractional
+   divisor latch, so the clock itself has to be scaled: `clock set to
+   64000000 Hz (ratio 8/15)` then `div 1 of rclk 64000000 = 4000000`.  The
+   ratio write is verified by reading the register back and the previous
+   value is restored if it does not take.
+7. `interrupt 20, routed by the pci bus` + `ioapic0: routing intpin 20` →
+   the interrupt works, once it is claimed on *our* device.  A PCI function
+   with no driver never joins a devclass, so it has no `nameunit`
+   (`subr_bus.c:1314`), and `nexus_setup_intr()` passes that NULL name
+   straight to `intr_add_handler()`, which refuses it with EINVAL.  Two
+   earlier diagnoses of this were wrong: it is not "MSI only" (every driver on
+   this box is MSI, but MSI goes through the same nameless function), and
+   `struct intsrc.is_event` *is* created at boot by `intr_register_source()`.
+
+Where it stands: window, controller, baud rate and interrupt are all correct
+now, and the failure has moved to the protocol — the EC does not answer the
+firmware-version request, `error 60` is `ETIMEDOUT`.  Nothing in the log says
+whether bytes left the port, so the next step is diagnostics, not another
+guess: expose the statistics sysctls *before* the first request (they are
+added after it now, so a failed attach leaves nothing to read), say which
+wait timed out (ACK or response), print the line status after a transmit
+(0xff would mean the functional block is still not running), and dump the
+statistics on attach failure.
 
 
 
@@ -188,6 +280,17 @@ finds nothing and does nothing if the firmware uses a different usage).
 Sources: `/mnt/linux-surface/patches/*`, upstream Linux
 (`torvalds/linux` master) read via raw.githubusercontent for facts only.
 
+- **The SSH UART is an Intel LPSS (DesignWare) core on PCI**:
+  `pci0:0:30:0 = 8086:34a8` "Ice Lake-LP Serial IO UART Controller", which the
+  reference driver groups with Sunrisepoint at **120 MHz** (100 MHz is the Bay
+  Trail/Tiger Lake group).  UA00 (`00:1e.0`) has no `_CRS`, so its window is
+  BAR0 only, and its additional register block sits at **0x200** in that BAR
+  (reset control 0x204 = FUNC|IDMA, register address 0x240 as a single 32 bit
+  write, clock ratio at 0x200 with M in 15:1 and N in 31:16, gate in bit 0,
+  device type in 7:4 of 0x2fc).  MSHW0084 is `\_SB.SSH`, whose `_CRS` is a
+  prebuilt buffer (`SBUF`) whose baud field `_INI` fills from `\PSBR`, the PCH
+  UART's own baud register at offset 0x7ed of the PCH power management region —
+  4,000,000 on this machine, and 4 MBd needs a clock of exactly 16x that.
 - **SAM/SSAM is present and speaks SSH-over-UART** (not SAM-over-HID; that is
   only gen-4/Pro 4/Book 1). SL4 is in the platform-hub match table:
   - `MSHW0250` = SL4 13" Intel, `MSHW0110` = SL3 15" AMD **and SL4 15" AMD**
@@ -297,6 +400,32 @@ Sources: `/mnt/linux-surface/patches/*`, upstream Linux
 - **sysctl/lock conventions**: `SYSCTL_ADD_*` under
   `device_get_sysctl_ctx/tree(dev)`; ACPI drivers use a subsystem mutex +
   `ACPI_SERIAL_BEGIN/END`.
+- **This tree's `bus_setup_intr()` flag values are a trap** (`sys/sys/bus.h:269`):
+  `INTR_TYPE_TTY = 1`, `INTR_TYPE_BIO = 2`, `INTR_TYPE_NET = 4`, …,
+  `INTR_MPSAFE = 512`, while trigger and polarity are separate enums with the
+  *same* values (`INTR_TRIGGER_EDGE = 1`, `INTR_TRIGGER_LEVEL = 2`,
+  `INTR_POLARITY_LOW = 2`).  `intr_priority()` masks with the type bits only and
+  panics ("no interrupt type in flags") unless exactly one type bit is set, so
+  passing `INTR_TRIGGER_LEVEL` alongside `INTR_TYPE_TTY` yields 5 and panics.
+  Trigger and polarity are configured per source by the interrupt *routing*
+  (via `BUS_CONFIG_INTR`), not per handler.
+- **A device that never joined a devclass has no `nameunit`** — it is only
+  allocated in `devclass_add_device()` (`subr_bus.c:1314`).  A PCI function with
+  no driver of its own therefore cannot own an interrupt handler:
+  `nexus_setup_intr()` passes `device_get_nameunit(child)` to
+  `intr_add_handler()`, and `intr_event_add_handler()` refuses a NULL name with
+  EINVAL.  Claim the interrupt on the device that *does* have a name.
+  (`struct intsrc.is_event` is not the problem: `intr_register_source()` creates
+  it for every source at boot.)
+- **No timed sleep on thread0 during cold boot**: ACPI devices attach from
+  `root_bus_configure()`, where `sleepq_set_timeout_sbt()` panics with "timed
+  sleep before timers are working" (`subr_sleepqueue.c:408`, `if (cold && td ==
+  &thread0)`).  Anything the driver does in attach must spin rather than
+  `msleep()`, and must not measure timeouts in `ticks`, which does not advance
+  yet either.  Test with `if (!cold)`.
+- **`pci_get_bus/slot/function/domain/intpin/…` are static inlines** generated
+  by `PCI_ACCESSOR()` in `sys/dev/pci/pcivar.h` — grepping for a prototype finds
+  nothing, they are macros.  `pci_find_bsf()`/`pci_alloc_msi()` are real.
 
 ## Process
 
