@@ -3251,6 +3251,12 @@ dev/spibus/spigen.c		optional spigen
 dev/spibus/spibus_if.m		optional spibus
 dev/ste/if_ste.c		optional ste pci
 dev/stge/if_stge.c		optional stge
+dev/surface/surface_hid.c	optional surface_sam		hid
+dev/surface/surface_mon.c	optional surface_sam
+dev/surface/surface_profile.c	optional surface_sam
+dev/surface/surface_rtc.c	optional surface_sam
+dev/surface/surface_sam.c	optional surface_sam		acpi
+dev/surface/surface_sam_uart.c	optional surface_sam		acpi
 dev/sym/sym_hipd.c		optional sym				\
 	dependency	"$S/dev/sym/sym_{conf,defs}.h"
 dev/syscon/syscon.c		optional syscon

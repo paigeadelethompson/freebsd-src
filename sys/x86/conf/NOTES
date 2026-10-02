@@ -190,6 +190,9 @@ device		acpi_video
 # ACPI Docking Station
 device		acpi_dock
 
+# Microsoft Surface Serial Hub (SAM/SSAM) transport driver
+device		surface_sam
+
 # ACPI ASOC ATK0110 ASUSTeK AI Booster (voltage, temperature and fan sensors)
 device		aibs
 

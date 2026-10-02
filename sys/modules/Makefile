@@ -395,6 +395,7 @@ SUBDIR=	\
 	ste \
 	stge \
 	${_sume} \
+	surface_sam \
 	${_superio} \
 	${_p2sb} \
 	sym \
