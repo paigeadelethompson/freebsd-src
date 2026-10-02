@@ -92,6 +92,15 @@ MALLOC_DEFINE(M_SURFACE_SAM, "surface_sam",
 #define	SAM_ACK_DONE		2	/* acknowledged */
 #define	SAM_ACK_NAK		3	/* negatively acknowledged */
 
+/*
+ * Received bytes are queued here by the UART layer (interrupt context) and
+ * parsed on the private taskqueue thread.  The parser acknowledges frames
+ * by transmitting, and transmitting can wait for the transmitter, so doing
+ * that straight from the interrupt handler would hold up the thread that
+ * interrupt handlers and timed sleeps run on.
+ */
+#define	SAM_RXQ_SIZE		2048
+
 static char *surface_sam_ids[] = {
 	"MSHW0084",
 	NULL
@@ -135,6 +144,17 @@ struct surface_sam {
 	uint8_t			 sam_rx_win[SAM_SEQ_WINDOW];
 	uint8_t			 sam_rx_win_off;
 
+	/* Bytes received in interrupt context, parsed on sam_tq. */
+	struct task		 sam_rx_task;
+	struct mtx		 sam_rxq_mtx;
+	uint8_t			 sam_rxq[SAM_RXQ_SIZE];
+	size_t			 sam_rxq_head;
+	size_t			 sam_rxq_tail;
+	uint64_t		 sam_st_rx_overrun;
+
+	/* Rate limit on the NAKs we answer bad frames with. */
+	int			 sam_nak_ticks;
+
 	/* Statistics / sysctls. */
 	uint64_t		 sam_st_tx;
 	uint64_t		 sam_st_rx;
@@ -165,6 +185,7 @@ struct sam_event_item {
 
 struct sam_crs_ctx {
 	struct sam_uart_config	*cfg;
+	device_t		 dev;
 	bool			 have_io;
 	bool			 have_uart;
 	bool			 have_rsrc;
@@ -270,6 +291,18 @@ static void
 surface_sam_send_nak(struct surface_sam *sam)
 {
 	int error;
+
+	/*
+	 * A NAK is best effort, so rate limit it.  A port that reads back
+	 * 0xff, or a line running at the wrong rate, produces frames we
+	 * reject; answering each of them would pit the EC and us in a
+	 * ping-pong that keeps the thread that delivers received bytes
+	 * (the callout thread when there is no interrupt) busy enough to
+	 * hold up every timed sleep queued behind it.
+	 */
+	if (ticks - sam->sam_nak_ticks < hz / 10)
+		return;
+	sam->sam_nak_ticks = ticks;
 
 	error = surface_sam_tx_msg(sam, SSH_FRAME_TYPE_NAK, 0x00, NULL, 0);
 	if (error != 0)
@@ -508,18 +541,136 @@ surface_sam_rx_byte(struct surface_sam *sam, uint8_t b)
 	}
 }
 
-/* Receive callback from the UART layer (interrupt/poll context). */
+/*
+ * Parse queued receive bytes.  Runs on the private taskqueue thread, so it
+ * may take sam_mtx and transmit (frames are acknowledged from here); the
+ * receive callback that feeds the queue runs in interrupt context and does
+ * neither.
+ */
+static void
+surface_sam_rx_task(void *arg, int pending)
+{
+	struct surface_sam *sam;
+	uint8_t buf[64];
+	size_t n, i, off;
+
+	(void)pending;
+	sam = arg;
+	for (;;) {
+		/* Move a chunk out of the queue, then parse it unlocked. */
+		n = 0;
+		mtx_lock(&sam->sam_rxq_mtx);
+		while (n < sizeof(buf) &&
+		    sam->sam_rxq_head != sam->sam_rxq_tail) {
+			off = sam->sam_rxq_head;
+			buf[n++] = sam->sam_rxq[off];
+			sam->sam_rxq_head = (off + 1) % SAM_RXQ_SIZE;
+		}
+		mtx_unlock(&sam->sam_rxq_mtx);
+		if (n == 0)
+			break;
+
+		mtx_lock(&sam->sam_mtx);
+		for (i = 0; i < n; i++)
+			surface_sam_rx_byte(sam, buf[i]);
+		mtx_unlock(&sam->sam_mtx);
+	}
+}
+
+/*
+ * Receive callback from the UART layer.  Called in interrupt context with no
+ * locks held: queue the bytes and let the taskqueue thread parse them, so
+ * that neither sam_mtx nor the transmitter is waited for here.
+ */
 static void
 surface_sam_input(void *arg, const uint8_t *buf, size_t len)
 {
 	struct surface_sam *sam;
-	size_t i;
+	size_t i, off, next;
 
 	sam = arg;
-	mtx_lock(&sam->sam_mtx);
-	for (i = 0; i < len; i++)
-		surface_sam_rx_byte(sam, buf[i]);
+	mtx_lock(&sam->sam_rxq_mtx);
+	for (i = 0; i < len; i++) {
+		next = (sam->sam_rxq_tail + 1) % SAM_RXQ_SIZE;
+		if (next == sam->sam_rxq_head) {
+			/*
+			 * The EC outran us.  Drop the rest of this burst and
+			 * let the frame CRC checks resynchronise the parser.
+			 */
+			sam->sam_st_rx_overrun += len - i;
+			break;
+		}
+		off = sam->sam_rxq_tail;
+		sam->sam_rxq[off] = buf[i];
+		sam->sam_rxq_tail = next;
+	}
+	mtx_unlock(&sam->sam_rxq_mtx);
+
+	taskqueue_enqueue(sam->sam_tq, &sam->sam_rx_task);
+}
+
+/*
+ * Wait for a condition to change, with sam_mtx released, and report
+ * EWOULDBLOCK if it did not change within the time given.
+ *
+ * While the kernel is still coming up - which is when the transport attaches,
+ * since ACPI devices attach from root_bus_configure() - a timed sleep on
+ * thread0 panics ("timed sleep before timers are working") and the clock
+ * does not run yet either.  There, wait by spinning, bounded by an iteration
+ * count rather than by the clock.
+ */
+static int
+surface_sam_wait(struct surface_sam *sam, const void *what, int expect,
+    int ms)
+{
+	const volatile int *cond;
+	int i, rounds;
+
+	if (!cold)
+		return (msleep(what, &sam->sam_mtx, PRIBIO, "samwait",
+		    surface_ms2ticks(ms)));
+
+	/* Read the condition through a volatile view of the same address. */
+	cond = what;
 	mtx_unlock(&sam->sam_mtx);
+	rounds = ms * 20;			/* DELAY(50) rounds per ms */
+	for (i = 0; i < rounds; i++) {
+		DELAY(50);
+		if (*cond != expect)
+			break;
+	}
+	mtx_lock(&sam->sam_mtx);
+	if (*cond == expect)
+		return (EWOULDBLOCK);
+	return (0);
+}
+
+/*
+ * As surface_sam_wait(), for a condition held in a bool.
+ */
+static int
+surface_sam_wait_bool(struct surface_sam *sam, const void *what, bool expect,
+    int ms)
+{
+	const volatile bool *cond;
+	int i, rounds;
+
+	if (!cold)
+		return (msleep(what, &sam->sam_mtx, PRIBIO, "samwait",
+		    surface_ms2ticks(ms)));
+
+	cond = what;
+	mtx_unlock(&sam->sam_mtx);
+	rounds = ms * 20;			/* DELAY(50) rounds per ms */
+	for (i = 0; i < rounds; i++) {
+		DELAY(50);
+		if (*cond != expect)
+			break;
+	}
+	mtx_lock(&sam->sam_mtx);
+	if (*cond == expect)
+		return (EWOULDBLOCK);
+	return (0);
 }
 
 /*
@@ -582,9 +733,8 @@ surface_sam_request_locked(struct surface_sam *sam, uint8_t tc, uint8_t tid,
 		if (error != 0)
 			break;
 		while (error == 0 && sam->sam_ack_state == SAM_ACK_WAIT) {
-			error = msleep(&sam->sam_ack_state, &sam->sam_mtx,
-			    PRIBIO, "samack",
-			    surface_ms2ticks(SAM_ACK_TIMEOUT_MS));
+			error = surface_sam_wait(sam, &sam->sam_ack_state,
+			    SAM_ACK_WAIT, SAM_ACK_TIMEOUT_MS);
 			if (error == EWOULDBLOCK)
 				error = ETIMEDOUT;
 		}
@@ -625,8 +775,8 @@ surface_sam_request_locked(struct surface_sam *sam, uint8_t tc, uint8_t tid,
 	timeout = timeout_ms > 0 ? timeout_ms : SAM_RQST_TIMEOUT_MS;
 	error = 0;
 	while (!sam->sam_rqst_have && error == 0) {
-		error = msleep(&sam->sam_rqst_have, &sam->sam_mtx, PRIBIO,
-		    "samrsp", surface_ms2ticks(timeout));
+		error = surface_sam_wait_bool(sam, &sam->sam_rqst_have,
+		    false, timeout);
 		if (error == EWOULDBLOCK)
 			error = ETIMEDOUT;
 	}
@@ -740,8 +890,13 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 		 * also rejects I2C/SPI resources safely.
 		 */
 		if (res->Data.UartSerialBus.Type !=
-		    ACPI_RESOURCE_SERIAL_TYPE_UART)
+		    ACPI_RESOURCE_SERIAL_TYPE_UART) {
+			if (bootverbose)
+				device_printf(ctx->dev,
+				    "_CRS: serial bus type %u, not UART\n",
+				    res->Data.UartSerialBus.Type);
 			break;
+		}
 		ub = &res->Data.UartSerialBus;
 		cfg->uart_baud = ub->DefaultBaudRate;
 		cfg->uart_hwflow = ub->FlowControl ==
@@ -781,16 +936,30 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 			ctx->have_rsrc = true;
 		}
 		ctx->have_uart = true;
+		if (bootverbose)
+			device_printf(ctx->dev,
+			    "_CRS: uart baud %u hwflow %d lcr %#x, "
+			    "controller %s\n", cfg->uart_baud,
+			    cfg->uart_hwflow, cfg->uart_lcr,
+			    ctx->have_rsrc ? ctx->rsrc : "-");
 		break;
 	case ACPI_RESOURCE_TYPE_IO:
 		cfg->uart_iobase = res->Data.Io.Minimum;
 		cfg->uart_nports = res->Data.Io.AddressLength;
 		ctx->have_io = true;
+		if (bootverbose)
+			device_printf(ctx->dev, "_CRS: I/O %#jx+%u\n",
+			    (uintmax_t)res->Data.Io.Minimum,
+			    res->Data.Io.AddressLength);
 		break;
 	case ACPI_RESOURCE_TYPE_FIXED_IO:
 		cfg->uart_iobase = res->Data.FixedIo.Address;
 		cfg->uart_nports = res->Data.FixedIo.AddressLength;
 		ctx->have_io = true;
+		if (bootverbose)
+			device_printf(ctx->dev, "_CRS: fixed I/O %#jx+%u\n",
+			    (uintmax_t)res->Data.FixedIo.Address,
+			    res->Data.FixedIo.AddressLength);
 		break;
 	case ACPI_RESOURCE_TYPE_IRQ:
 		if (res->Data.Irq.InterruptCount == 0)
@@ -799,6 +968,11 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 		cfg->uart_have_irq = true;
 		cfg->uart_irq_trigger = res->Data.Irq.Triggering;
 		cfg->uart_irq_polarity = res->Data.Irq.Polarity;
+		if (bootverbose)
+			device_printf(ctx->dev,
+			    "_CRS: irq %ju trig %u pol %u\n",
+			    (uintmax_t)cfg->uart_irq,
+			    cfg->uart_irq_trigger, cfg->uart_irq_polarity);
 		break;
 	case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
 		if (res->Data.ExtendedIrq.InterruptCount == 0)
@@ -807,6 +981,11 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 		cfg->uart_have_irq = true;
 		cfg->uart_irq_trigger = res->Data.ExtendedIrq.Triggering;
 		cfg->uart_irq_polarity = res->Data.ExtendedIrq.Polarity;
+		if (bootverbose)
+			device_printf(ctx->dev,
+			    "_CRS: irq %ju trig %u pol %u (extended)\n",
+			    (uintmax_t)cfg->uart_irq,
+			    cfg->uart_irq_trigger, cfg->uart_irq_polarity);
 		break;
 	case ACPI_RESOURCE_TYPE_GENERIC_REGISTER:
 		if (ctx->have_io ||
@@ -816,8 +995,16 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 		cfg->uart_iobase = res->Data.GenericReg.Address;
 		cfg->uart_nports = res->Data.GenericReg.BitWidth / 8;
 		ctx->have_io = true;
+		if (bootverbose)
+			device_printf(ctx->dev,
+			    "_CRS: generic reg %#jx (%u bits), SystemIo\n",
+			    (uintmax_t)res->Data.GenericReg.Address,
+			    res->Data.GenericReg.BitWidth);
 		break;
 	default:
+		if (bootverbose)
+			device_printf(ctx->dev,
+			    "_CRS: resource type %u\n", res->Type);
 		break;
 	}
 	return (AE_OK);
@@ -831,27 +1018,58 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
  * reference OS drives via intel-lpss + 8250_dw (reg-io-width 4, reg-shift
  * 2, 16550-compatible registers, 100 MHz reference clock).
  */
+/*
+ * Reference clock feeding the LPSS additional registers, by PCI device id.
+ * The Sunrisepoint generation and its Ice Lake and Cannon Lake successors
+ * run it at 120 MHz, the rest since Bay Trail at 100 MHz - the same split
+ * the reference driver draws from its per platform table (120 MHz for the
+ * Sunrisepoint UART entries, 100 MHz for the Bay Trail ones).
+ */
+static uint32_t
+surface_sam_lpss_freq(uint16_t device)
+{
+	static const uint16_t mhz120[] = {
+		0x02a8, 0x02a9, 0x02c7,	/* Cannon Lake LP */
+		0x06a8, 0x06a9, 0x06c7,	/* Cannon Lake LP */
+		0x34a8, 0x34a9, 0x34c7,	/* Ice Lake LP */
+		0x9d27, 0x9d28, 0x9d66,	/* Sunrisepoint LP */
+	};
+	u_int i;
+
+	for (i = 0; i < nitems(mhz120); i++)
+		if (device == mhz120[i])
+			return (120000000);
+	return (100000000);
+}
+
 static int
 surface_sam_crs_pci(device_t dev, ACPI_HANDLE handle, struct sam_crs_ctx *ctx)
 {
 	struct sam_uart_config *cfg;
 	ACPI_BUFFER buf;
 	ACPI_OBJECT *obj;
+	ACPI_STATUS status;
 	device_t pcidev;
-	uint32_t adr, bar, irq, mem_base;
-	int i, rid, mem_rid, func;
+	uint32_t adr, bar, barhi, barbase, irq, mem_base;
+	int i, rid, mem_rid, zero_rid, func, error, pwr;
 
 	cfg = ctx->cfg;
 	mem_rid = -1;
+	zero_rid = -1;
 	mem_base = 0;
 
 	memset(&buf, 0, sizeof(buf));
 	buf.Length = ACPI_ALLOCATE_BUFFER;
-	if (ACPI_FAILURE(AcpiEvaluateObject(handle, "_ADR", NULL, &buf)) ||
-	    buf.Pointer == NULL)
+	status = AcpiEvaluateObject(handle, "_ADR", NULL, &buf);
+	if (ACPI_FAILURE(status) || buf.Pointer == NULL) {
+		device_printf(dev, "%s: _ADR evaluation failed (0x%x)\n",
+		    ctx->rsrc, status);
 		return (ENXIO);
+	}
 	obj = buf.Pointer;
 	if (obj->Type != ACPI_TYPE_INTEGER) {
+		device_printf(dev, "%s: _ADR type %u is not an integer\n",
+		    ctx->rsrc, obj->Type);
 		AcpiOsFree(buf.Pointer);
 		return (ENXIO);
 	}
@@ -868,25 +1086,46 @@ surface_sam_crs_pci(device_t dev, ACPI_HANDLE handle, struct sam_crs_ctx *ctx)
 		func = (adr >> 8) & 0xff;
 	else
 		func = adr & 0xff;
+	if (bootverbose)
+		device_printf(dev, "%s: ADR %#x -> bus 0 slot %#x func %u\n",
+		    ctx->rsrc, adr, (adr >> 16) & 0xff, func);
 	pcidev = pci_find_bsf(0, (adr >> 16) & 0xff, func);
-	if (pcidev == NULL)
+	if (pcidev == NULL) {
+		device_printf(dev,
+		    "no pci function for %s (ADR %#x: bus 0 slot %#x func %u)\n",
+		    ctx->rsrc, adr, (adr >> 16) & 0xff, func);
 		return (ENXIO);
+	}
 
 	/* The function may sit in D3 until someone powers it up. */
-	if (pci_get_powerstate(pcidev) != PCI_POWERSTATE_D0)
-		(void)pci_set_powerstate(pcidev, PCI_POWERSTATE_D0);
+	pwr = pci_get_powerstate(pcidev);
+	if (pwr != PCI_POWERSTATE_D0) {
+		error = pci_set_powerstate(pcidev, PCI_POWERSTATE_D0);
+		if (error != 0)
+			device_printf(dev,
+			    "%s: pci_set_powerstate(D0) failed (%d)\n",
+			    ctx->rsrc, error);
+		if (bootverbose || error != 0)
+			device_printf(dev, "%s: power state %d -> %d\n",
+			    ctx->rsrc, pwr, pci_get_powerstate(pcidev));
+	}
 
 	/*
-	 * Prefer an I/O BAR (a plain 16550 window); remember the first
-	 * 32-bit memory BAR, which is what an LPSS/DesignWare UART
-	 * exposes.  64-bit BARs are not used by this hardware.
+	 * Prefer an I/O BAR (a plain 16550 window), else the first
+	 * memory BAR with a base from the firmware.  A memory BAR that
+	 * reads 0 was never assigned - keep it as a last resort, since
+	 * pci_alloc_resource() sizes and assigns such a BAR when the
+	 * window is requested.  64-bit BARs only work with a zero
+	 * upper half.
 	 */
 	for (i = 0; i <= PCIR_MAX_BAR_0; i++) {
 		rid = PCIR_BAR(i);
 		bar = pci_read_config(pcidev, rid, 4);
-		if (bar == 0 || bar == 0xffffffff)
+		if (bar == 0xffffffff)
 			continue;
 		if (PCI_BAR_IO(bar)) {
+			if ((bar & PCIM_BAR_IO_RESERVED) != 0)
+				continue;
 			cfg->uart_mem = false;
 			cfg->uart_iobase = bar & PCIM_BAR_IO_BASE;
 			cfg->uart_nports = 8;
@@ -895,32 +1134,71 @@ surface_sam_crs_pci(device_t dev, ACPI_HANDLE handle, struct sam_crs_ctx *ctx)
 			ctx->have_io = true;
 			break;
 		}
-		if (PCI_BAR_MEM(bar) &&
-		    (bar & PCIM_BAR_MEM_TYPE) == PCIM_BAR_MEM_32 &&
-		    mem_rid < 0) {
-			mem_rid = rid;
-			mem_base = bar & (uint32_t)PCIM_BAR_MEM_BASE;
+		if (!PCI_BAR_MEM(bar))
+			continue;
+		switch (bar & PCIM_BAR_MEM_TYPE) {
+		case PCIM_BAR_MEM_32:
+			barhi = 0;
+			break;
+		case PCIM_BAR_MEM_64:
+			barhi = pci_read_config(pcidev, rid + 4, 4);
+			if (barhi != 0)
+				continue;	/* above 4G */
+			break;
+		default:
+			continue;	/* legacy 1MB type */
 		}
+		barbase = bar & (uint32_t)PCIM_BAR_MEM_BASE;
+		if (barbase != 0) {
+			if (mem_rid < 0) {
+				mem_rid = rid;
+				mem_base = barbase;
+			}
+		} else if (zero_rid < 0)
+			zero_rid = rid;
 	}
-	if (!ctx->have_io && mem_rid >= 0) {
+	if (!ctx->have_io && (mem_rid >= 0 || zero_rid >= 0)) {
 		cfg->uart_mem = true;
 		cfg->uart_iobase = mem_base;
 		cfg->uart_nports = 0;	/* sized by the window allocator */
 		cfg->uart_pcidev = pcidev;
-		cfg->uart_rid = mem_rid;
+		cfg->uart_rid = mem_rid >= 0 ? mem_rid : zero_rid;
 		ctx->have_io = true;
+		if (mem_rid < 0)
+			device_printf(dev,
+			    "%s: BAR %d has no base; the bus will assign it\n",
+			    ctx->rsrc, PCI_RID2BAR(cfg->uart_rid));
 	}
-	if (!ctx->have_io)
+	if (!ctx->have_io) {
+		device_printf(dev,
+		    "%s: %s: no usable BAR (pwr %d): "
+		    "%#x %#x %#x %#x %#x %#x\n",
+		    ctx->rsrc, device_get_nameunit(pcidev),
+		    pci_get_powerstate(pcidev),
+		    pci_read_config(pcidev, PCIR_BAR(0), 4),
+		    pci_read_config(pcidev, PCIR_BAR(1), 4),
+		    pci_read_config(pcidev, PCIR_BAR(2), 4),
+		    pci_read_config(pcidev, PCIR_BAR(3), 4),
+		    pci_read_config(pcidev, PCIR_BAR(4), 4),
+		    pci_read_config(pcidev, PCIR_BAR(5), 4));
 		return (ENXIO);
-
-	/* PCI INTx line, if the firmware wired one up. */
-	irq = pci_read_config(pcidev, PCIR_INTLINE, 1);
-	if (irq != 0 && irq != 0xff) {
-		cfg->uart_irq = irq;
-		cfg->uart_have_irq = true;
-		cfg->uart_irq_trigger = ACPI_LEVEL_SENSITIVE;
-		cfg->uart_irq_polarity = ACPI_ACTIVE_LOW;
 	}
+
+	/*
+	 * Do not take the interrupt from the interrupt line register: a
+	 * firmware that routes this function through ACPI leaves that
+	 * register empty and describes the line in the routing table of the
+	 * parent bridge instead.  The PCI bus sorts that out when the
+	 * driver asks the function for an interrupt.
+	 */
+	irq = pci_read_config(pcidev, PCIR_INTLINE, 1);
+	if (bootverbose)
+		device_printf(dev, "%s: intpin %u, intline %u\n", ctx->rsrc,
+		    pci_read_config(pcidev, PCIR_INTPIN, 1), irq);
+	cfg->uart_base_freq = surface_sam_lpss_freq(pci_get_device(pcidev));
+	device_printf(dev, "%s: using BAR %d at 00:%02x.%u, reference clock "
+	    "%u Hz\n", ctx->rsrc, PCI_RID2BAR(cfg->uart_rid),
+	    (adr >> 16) & 0xff, func, cfg->uart_base_freq);
 	return (0);
 }
 
@@ -940,9 +1218,15 @@ surface_sam_follow_rsrc(device_t dev, ACPI_HANDLE handle,
 
 	/* Some firmware gives the controller its own _CRS. */
 	status = AcpiWalkResources(ctrl, "_CRS", surface_sam_crs_cb, ctx);
+	if (ACPI_FAILURE(status) && status != AE_NOT_FOUND)
+		device_printf(dev, "%s: _CRS walk error 0x%x\n",
+		    ctx->rsrc, status);
 	if (ACPI_SUCCESS(status) && ctx->have_io)
 		return;
 
+	if (bootverbose)
+		device_printf(dev, "%s: no window in _CRS, "
+		    "trying its pci function\n", ctx->rsrc);
 	if (surface_sam_crs_pci(dev, ctrl, ctx) != 0)
 		device_printf(dev, "no usable UART window on %s\n",
 		    ctx->rsrc);
@@ -955,6 +1239,7 @@ surface_sam_parse_crs(device_t dev, ACPI_HANDLE handle,
 	struct sam_crs_ctx ctx;
 	unsigned long rclk;
 	ACPI_STATUS status;
+	int flow;
 
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->uart_irq_trigger = 0xff;
@@ -963,37 +1248,90 @@ surface_sam_parse_crs(device_t dev, ACPI_HANDLE handle,
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.cfg = cfg;
+	ctx.dev = dev;
 
 	status = AcpiWalkResources(handle, "_CRS", surface_sam_crs_cb, &ctx);
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
+		device_printf(dev, "_CRS walk failed (0x%x)\n", status);
 		return (ENOENT);
+	}
+	if (!ctx.have_uart)
+		device_printf(dev,
+		    "_CRS has no UART serial bus descriptor, "
+		    "using defaults\n");
 
 	/*
 	 * MSHW0084 carries no I/O resource of its own: its _CRS only
 	 * names the UART controller behind which the port lives.  Follow
 	 * that resource source to the actual window.
 	 */
-	if (!ctx.have_io && ctx.have_rsrc)
+	if (!ctx.have_io && ctx.have_rsrc) {
+		if (bootverbose)
+			device_printf(dev, "following resource source %s\n",
+			    ctx.rsrc);
 		surface_sam_follow_rsrc(dev, handle, &ctx);
+	}
 
 	/* The reference clock is not part of _CRS; allow an override. */
 	rclk = 0;
 	(void)TUNABLE_ULONG_FETCH("hw.surface_sam.rclk", &rclk);
-	if (rclk > 0 && rclk <= UINT_MAX)
+	if (rclk > 0 && rclk <= UINT_MAX) {
 		cfg->uart_rclk = (uint32_t)rclk;
+		device_printf(dev, "rclk override %u Hz\n", cfg->uart_rclk);
+	}
 
 	/*
-	 * Intel LPSS UARTs (DesignWare core) run from a 100 MHz
-	 * reference on this generation (bxt_uart_info in the reference
-	 * intel-lpss driver, used by the Tiger Lake LP UART entries).
+	 * _CRS asks for RTS/CTS flow control.  The reference stack leaves
+	 * it disabled on this port, and a transmitter that never sees CTS
+	 * asserted would stall, so it stays off unless asked for.
 	 */
-	if (cfg->uart_rclk == 0 && cfg->uart_mem)
-		cfg->uart_rclk = 100000000;
+	flow = 0;
+	(void)TUNABLE_INT_FETCH("hw.surface_sam.hwflow", &flow);
+	if (cfg->uart_hwflow && flow == 0)
+		device_printf(dev, "_CRS asks for hw flow control, "
+		    "leaving it off (hw.surface_sam.hwflow=1 to enable)\n");
+	cfg->uart_hwflow = flow != 0;
+
+	/*
+	 * The reference clock is not part of _CRS.  For a window in a PCI
+	 * function it comes out of the controller itself (the LPSS clock
+	 * ratio register) once the UART layer has taken the device out of
+	 * reset, so leave it alone here; only hw.surface_sam.rclk overrides
+	 * it.  The clock that ends up being used is printed once the port
+	 * has been programmed.
+	 */
 
 	if (!ctx.have_io)
 		return (ENXIO);
 	if (cfg->uart_pcidev == NULL && cfg->uart_nports == 0)
 		cfg->uart_nports = 8;
+	if (bootverbose) {
+		/*
+		 * The window is not allocated and the function not probed
+		 * yet, so report what was chosen rather than a base address
+		 * and a name: the bus assigns the BAR when it is requested.
+		 */
+		if (cfg->uart_pcidev != NULL)
+			device_printf(dev, "resolved window: %s BAR %d on the "
+			    "uart function\n", cfg->uart_mem ? "memory" : "I/O",
+			    PCI_RID2BAR(cfg->uart_rid));
+		else
+			device_printf(dev, "resolved window: I/O %#jx+%u\n",
+			    (uintmax_t)cfg->uart_iobase, cfg->uart_nports);
+		if (cfg->uart_pcidev != NULL)
+			device_printf(dev, "resolved irq: from the pci bus "
+			    "(trigger and polarity come from its routing)\n");
+		else if (cfg->uart_have_irq)
+			device_printf(dev,
+			    "resolved irq: %ju (trig %u pol %u)\n",
+			    (uintmax_t)cfg->uart_irq, cfg->uart_irq_trigger,
+			    cfg->uart_irq_polarity);
+		else
+			device_printf(dev, "resolved irq: none in _CRS\n");
+		device_printf(dev, "resolved line: baud %u lcr %#x "
+		    "hwflow %d\n", cfg->uart_baud, cfg->uart_lcr,
+		    cfg->uart_hwflow);
+	}
 	return (0);
 }
 
@@ -1023,6 +1361,9 @@ surface_sam_add_sysctls(struct surface_sam *sam)
 	    CTLFLAG_RD, &sam->sam_st_rx, "data frames received");
 	SYSCTL_ADD_UQUAD(ctx, SYSCTL_CHILDREN(stats), OID_AUTO, "rx_dup",
 	    CTLFLAG_RD, &sam->sam_st_dup, "duplicate frames suppressed");
+	SYSCTL_ADD_UQUAD(ctx, SYSCTL_CHILDREN(stats), OID_AUTO, "rx_overrun",
+	    CTLFLAG_RD, &sam->sam_st_rx_overrun,
+	    "received bytes dropped (EC outran the driver)");
 	SYSCTL_ADD_UQUAD(ctx, SYSCTL_CHILDREN(stats), OID_AUTO, "crc_errors",
 	    CTLFLAG_RD, &sam->sam_st_crc_err, "CRC validation failures");
 	SYSCTL_ADD_UQUAD(ctx, SYSCTL_CHILDREN(stats), OID_AUTO, "bad_frames",
@@ -1082,13 +1423,15 @@ surface_sam_attach(device_t dev)
 	uint32_t response[2];
 	size_t rlen;
 	uint32_t version;
-	int error, i;
+	int error, i, intpin;
 
 	sam = device_get_softc(dev);
 	mtx_init(&sam->sam_mtx, "surface_sam", NULL, MTX_DEF);
+	mtx_init(&sam->sam_rxq_mtx, "surface_sam_rxq", NULL, MTX_DEF);
 	sam->sam_dev = dev;
 	TAILQ_INIT(&sam->sam_evq);
 	TASK_INIT(&sam->sam_ev_task, 0, surface_sam_event_task, sam);
+	TASK_INIT(&sam->sam_rx_task, 0, surface_sam_rx_task, sam);
 	memset(sam->sam_rx_win, 0xff, sizeof(sam->sam_rx_win));
 	sam->sam_rx_state = SAM_RX_SYN1;
 	sam->sam_ack_state = SAM_ACK_NONE;
@@ -1120,6 +1463,18 @@ surface_sam_attach(device_t dev)
 	sam->sam_uart = sam_uart_attach(dev, &cfg, &ops, sam);
 	if (sam->sam_uart == NULL) {
 		error = ENXIO;
+		if (cfg.uart_pcidev != NULL) {
+			intpin = pci_get_intpin(cfg.uart_pcidev);
+			if (intpin >= 1 && intpin <= 4)
+				device_printf(dev, "if the firmware does "
+				    "not route this interrupt, set "
+				    "hw.pci%u.%u.%u.INT%c.irq to its GSI in "
+				    "loader.conf\n",
+				    pci_get_bus(cfg.uart_pcidev),
+				    pci_get_slot(cfg.uart_pcidev),
+				    pci_get_function(cfg.uart_pcidev),
+				    'A' + intpin - 1);
+		}
 		goto fail_tq;
 	}
 
@@ -1197,6 +1552,7 @@ fail_tq:
 	taskqueue_free(sam->sam_tq);
 	sam->sam_tq = NULL;
 fail_mtx:
+	mtx_destroy(&sam->sam_rxq_mtx);
 	mtx_destroy(&sam->sam_mtx);
 	return (error);
 }
@@ -1218,7 +1574,7 @@ surface_sam_detach(device_t dev)
 	if (surface_sam_sc == sam)
 		surface_sam_sc = NULL;
 
-	/* Stops receive interrupts/polling; no new items can appear. */
+	/* Stops the receive interrupt; no new items can appear. */
 	if (sam->sam_uart != NULL) {
 		sam_uart_detach(sam->sam_uart);
 		sam->sam_uart = NULL;
@@ -1236,6 +1592,7 @@ surface_sam_detach(device_t dev)
 		sam->sam_tq = NULL;
 	}
 
+	mtx_destroy(&sam->sam_rxq_mtx);
 	mtx_destroy(&sam->sam_mtx);
 	return (0);
 }

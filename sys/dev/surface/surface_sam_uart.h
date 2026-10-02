@@ -45,7 +45,8 @@ struct sam_uart_config {
 	uint8_t		uart_irq_trigger;   /* ACPI_TRIGGER_* or 0xff */
 	uint8_t		uart_irq_polarity;  /* ACPI_ACTIVE_* or 0xff */
 	uint32_t	uart_baud;	/* 0 -> 115200 */
-	uint32_t	uart_rclk;	/* 0 -> 1843200 */
+	uint32_t	uart_rclk;	/* 0 -> tunable, else default */
+	uint32_t	uart_base_freq;	/* controller clock before its ratio */
 	uint8_t		uart_lcr;	/* line control word */
 	bool		uart_hwflow;	/* RTS/CTS from ACPI */
 	/*
