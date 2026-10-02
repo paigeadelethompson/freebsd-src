@@ -52,6 +52,8 @@
 #include <contrib/dev/acpica/include/accommon.h>
 
 #include <dev/acpica/acpivar.h>
+#include <dev/pci/pcireg.h>
+#include <dev/pci/pcivar.h>
 
 #include "acpi_if.h"
 
@@ -158,10 +160,15 @@ struct sam_event_item {
 	uint8_t			 data[];
 };
 
+/* Resource source string of the UART serial bus descriptor. */
+#define	SAM_RSRC_PATH_MAX	128
+
 struct sam_crs_ctx {
 	struct sam_uart_config	*cfg;
 	bool			 have_io;
 	bool			 have_uart;
+	bool			 have_rsrc;
+	char			 rsrc[SAM_RSRC_PATH_MAX];
 };
 
 static struct surface_sam *surface_sam_sc;
@@ -763,6 +770,16 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 			break;
 		}
 		cfg->uart_lcr = lcr;
+		/*
+		 * Remember where the controller lives (e.g.
+		 * \_SB.PCI0.UA00); the actual window follows it.
+		 */
+		if (ub->ResourceSource.StringPtr != NULL &&
+		    ub->ResourceSource.StringLength > 0) {
+			strlcpy(ctx->rsrc, ub->ResourceSource.StringPtr,
+			    sizeof(ctx->rsrc));
+			ctx->have_rsrc = true;
+		}
 		ctx->have_uart = true;
 		break;
 	case ACPI_RESOURCE_TYPE_IO:
@@ -806,8 +823,134 @@ surface_sam_crs_cb(ACPI_RESOURCE *res, void *arg)
 	return (AE_OK);
 }
 
+/*
+ * Take the register window and interrupt of the UART controller named by
+ * the serial bus descriptor's resource source.  On this firmware the
+ * controller (e.g. \_SB.PCI0.UA00) has no _CRS of its own: it is a PCI
+ * function whose window is a BAR, matching the Intel LPSS layout that the
+ * reference OS drives via intel-lpss + 8250_dw (reg-io-width 4, reg-shift
+ * 2, 16550-compatible registers, 100 MHz reference clock).
+ */
 static int
-surface_sam_parse_crs(ACPI_HANDLE handle, struct sam_uart_config *cfg)
+surface_sam_crs_pci(device_t dev, ACPI_HANDLE handle, struct sam_crs_ctx *ctx)
+{
+	struct sam_uart_config *cfg;
+	ACPI_BUFFER buf;
+	ACPI_OBJECT *obj;
+	device_t pcidev;
+	uint32_t adr, bar, irq, mem_base;
+	int i, rid, mem_rid, func;
+
+	cfg = ctx->cfg;
+	mem_rid = -1;
+	mem_base = 0;
+
+	memset(&buf, 0, sizeof(buf));
+	buf.Length = ACPI_ALLOCATE_BUFFER;
+	if (ACPI_FAILURE(AcpiEvaluateObject(handle, "_ADR", NULL, &buf)) ||
+	    buf.Pointer == NULL)
+		return (ENXIO);
+	obj = buf.Pointer;
+	if (obj->Type != ACPI_TYPE_INTEGER) {
+		AcpiOsFree(buf.Pointer);
+		return (ENXIO);
+	}
+	adr = (uint32_t)obj->Integer.Value;
+	AcpiOsFree(buf.Pointer);
+
+	/*
+	 * _SB.PCI0 is the firmware PCI root bridge, so bus 0.  The ACPI
+	 * spec packs the function into bits 15:8, but this firmware uses
+	 * the low byte (UA00 = 0x001E0000, UA01 = 0x001E0001); prefer
+	 * the spec field and fall back when it is empty.
+	 */
+	if (((adr >> 8) & 0xff) != 0)
+		func = (adr >> 8) & 0xff;
+	else
+		func = adr & 0xff;
+	pcidev = pci_find_bsf(0, (adr >> 16) & 0xff, func);
+	if (pcidev == NULL)
+		return (ENXIO);
+
+	/* The function may sit in D3 until someone powers it up. */
+	if (pci_get_powerstate(pcidev) != PCI_POWERSTATE_D0)
+		(void)pci_set_powerstate(pcidev, PCI_POWERSTATE_D0);
+
+	/*
+	 * Prefer an I/O BAR (a plain 16550 window); remember the first
+	 * 32-bit memory BAR, which is what an LPSS/DesignWare UART
+	 * exposes.  64-bit BARs are not used by this hardware.
+	 */
+	for (i = 0; i <= PCIR_MAX_BAR_0; i++) {
+		rid = PCIR_BAR(i);
+		bar = pci_read_config(pcidev, rid, 4);
+		if (bar == 0 || bar == 0xffffffff)
+			continue;
+		if (PCI_BAR_IO(bar)) {
+			cfg->uart_mem = false;
+			cfg->uart_iobase = bar & PCIM_BAR_IO_BASE;
+			cfg->uart_nports = 8;
+			cfg->uart_pcidev = pcidev;
+			cfg->uart_rid = rid;
+			ctx->have_io = true;
+			break;
+		}
+		if (PCI_BAR_MEM(bar) &&
+		    (bar & PCIM_BAR_MEM_TYPE) == PCIM_BAR_MEM_32 &&
+		    mem_rid < 0) {
+			mem_rid = rid;
+			mem_base = bar & (uint32_t)PCIM_BAR_MEM_BASE;
+		}
+	}
+	if (!ctx->have_io && mem_rid >= 0) {
+		cfg->uart_mem = true;
+		cfg->uart_iobase = mem_base;
+		cfg->uart_nports = 0;	/* sized by the window allocator */
+		cfg->uart_pcidev = pcidev;
+		cfg->uart_rid = mem_rid;
+		ctx->have_io = true;
+	}
+	if (!ctx->have_io)
+		return (ENXIO);
+
+	/* PCI INTx line, if the firmware wired one up. */
+	irq = pci_read_config(pcidev, PCIR_INTLINE, 1);
+	if (irq != 0 && irq != 0xff) {
+		cfg->uart_irq = irq;
+		cfg->uart_have_irq = true;
+		cfg->uart_irq_trigger = ACPI_LEVEL_SENSITIVE;
+		cfg->uart_irq_polarity = ACPI_ACTIVE_LOW;
+	}
+	return (0);
+}
+
+static void
+surface_sam_follow_rsrc(device_t dev, ACPI_HANDLE handle,
+    struct sam_crs_ctx *ctx)
+{
+	ACPI_HANDLE ctrl;
+	ACPI_STATUS status;
+
+	status = AcpiGetHandle(handle, ctx->rsrc, &ctrl);
+	if (ACPI_FAILURE(status)) {
+		device_printf(dev, "serial controller %s not found (0x%x)\n",
+		    ctx->rsrc, status);
+		return;
+	}
+
+	/* Some firmware gives the controller its own _CRS. */
+	status = AcpiWalkResources(ctrl, "_CRS", surface_sam_crs_cb, ctx);
+	if (ACPI_SUCCESS(status) && ctx->have_io)
+		return;
+
+	if (surface_sam_crs_pci(dev, ctrl, ctx) != 0)
+		device_printf(dev, "no usable UART window on %s\n",
+		    ctx->rsrc);
+}
+
+static int
+surface_sam_parse_crs(device_t dev, ACPI_HANDLE handle,
+    struct sam_uart_config *cfg)
 {
 	struct sam_crs_ctx ctx;
 	unsigned long rclk;
@@ -818,13 +961,20 @@ surface_sam_parse_crs(ACPI_HANDLE handle, struct sam_uart_config *cfg)
 	cfg->uart_irq_polarity = 0xff;
 	cfg->uart_lcr = 0x03;	/* 8 data bits, no parity, 1 stop bit */
 
+	memset(&ctx, 0, sizeof(ctx));
 	ctx.cfg = cfg;
-	ctx.have_io = false;
-	ctx.have_uart = false;
 
 	status = AcpiWalkResources(handle, "_CRS", surface_sam_crs_cb, &ctx);
 	if (ACPI_FAILURE(status))
 		return (ENOENT);
+
+	/*
+	 * MSHW0084 carries no I/O resource of its own: its _CRS only
+	 * names the UART controller behind which the port lives.  Follow
+	 * that resource source to the actual window.
+	 */
+	if (!ctx.have_io && ctx.have_rsrc)
+		surface_sam_follow_rsrc(dev, handle, &ctx);
 
 	/* The reference clock is not part of _CRS; allow an override. */
 	rclk = 0;
@@ -832,9 +982,17 @@ surface_sam_parse_crs(ACPI_HANDLE handle, struct sam_uart_config *cfg)
 	if (rclk > 0 && rclk <= UINT_MAX)
 		cfg->uart_rclk = (uint32_t)rclk;
 
+	/*
+	 * Intel LPSS UARTs (DesignWare core) run from a 100 MHz
+	 * reference on this generation (bxt_uart_info in the reference
+	 * intel-lpss driver, used by the Tiger Lake LP UART entries).
+	 */
+	if (cfg->uart_rclk == 0 && cfg->uart_mem)
+		cfg->uart_rclk = 100000000;
+
 	if (!ctx.have_io)
 		return (ENXIO);
-	if (cfg->uart_nports == 0)
+	if (cfg->uart_pcidev == NULL && cfg->uart_nports == 0)
 		cfg->uart_nports = 8;
 	return (0);
 }
@@ -951,10 +1109,10 @@ surface_sam_attach(device_t dev)
 		goto fail_tq;
 	}
 
-	error = surface_sam_parse_crs(sam->sam_handle, &cfg);
+	error = surface_sam_parse_crs(dev, sam->sam_handle, &cfg);
 	if (error != 0) {
 		device_printf(dev,
-		    "no usable UART resources in _CRS (error %d)\n", error);
+		    "no usable UART resources (error %d)\n", error);
 		goto fail_tq;
 	}
 

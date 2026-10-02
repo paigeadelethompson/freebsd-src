@@ -94,11 +94,16 @@
 struct sam_uart {
 	device_t		dev;
 	struct resource		*io_res;
+	device_t		res_dev;    /* device holding the window */
+	int			res_type;   /* SYS_RES_* of the window */
+	int			res_rid;
 	struct resource		*irq_res;
 	void			*ih;
 	bus_space_tag_t		bst;
 	bus_space_handle_t	bsh;
 	uint8_t			shift;
+	bool			mem;		/* memory-space window */
+	bool			w32;		/* 32-bit register accesses */
 	bool			polled;		/* no IRQ: callout polling */
 	struct callout		poll_ch;
 	const struct sam_uart_ops *ops;
@@ -110,17 +115,24 @@ static void sam_uart_poll(void *arg);
 static uint8_t
 sam_uart_rd(struct sam_uart *uart, uint8_t reg)
 {
+	bus_size_t off;
 
-	return (bus_space_read_1(uart->bst, uart->bsh,
-	    (bus_size_t)(reg << uart->shift)));
+	off = (bus_size_t)(reg << uart->shift);
+	if (uart->w32)
+		return (bus_space_read_4(uart->bst, uart->bsh, off) & 0xff);
+	return (bus_space_read_1(uart->bst, uart->bsh, off));
 }
 
 static void
 sam_uart_wr(struct sam_uart *uart, uint8_t reg, uint8_t val)
 {
+	bus_size_t off;
 
-	bus_space_write_1(uart->bst, uart->bsh,
-	    (bus_size_t)(reg << uart->shift), val);
+	off = (bus_size_t)(reg << uart->shift);
+	if (uart->w32)
+		bus_space_write_4(uart->bst, uart->bsh, off, val);
+	else
+		bus_space_write_1(uart->bst, uart->bsh, off, val);
 }
 
 static void
@@ -221,6 +233,38 @@ sam_uart_tx(struct sam_uart *uart, const uint8_t *buf, size_t len)
 	return (0);
 }
 
+/*
+ * Find the register layout of the window.  Intel LPSS (DesignWare core)
+ * spaces registers four bytes apart and wants 32-bit accesses
+ * (reg-shift 2, reg-io-width 4 in the reference intel-lpss driver); a
+ * classic 16550 uses byte-wide registers eight bytes apart.  The scratch
+ * register round-trips a pattern on both, so test each plausible
+ * (access width, register shift) pair and keep the first that answers.
+ */
+static bool
+sam_uart_probe_regs(struct sam_uart *uart, bool w32, uint8_t shift,
+    uint32_t window)
+{
+	bus_size_t scr;
+	uint8_t a, b;
+
+	scr = (bus_size_t)UART_SCR << shift;
+	if (scr + (w32 ? 4 : 1) > window)
+		return (false);
+	if (w32) {
+		bus_space_write_4(uart->bst, uart->bsh, scr, 0xa5);
+		a = bus_space_read_4(uart->bst, uart->bsh, scr) & 0xff;
+		bus_space_write_4(uart->bst, uart->bsh, scr, 0x5a);
+		b = bus_space_read_4(uart->bst, uart->bsh, scr) & 0xff;
+	} else {
+		bus_space_write_1(uart->bst, uart->bsh, scr, 0xa5);
+		a = bus_space_read_1(uart->bst, uart->bsh, scr);
+		bus_space_write_1(uart->bst, uart->bsh, scr, 0x5a);
+		b = bus_space_read_1(uart->bst, uart->bsh, scr);
+	}
+	return (a == 0xa5 && b == 0x5a);
+}
+
 static int
 sam_uart_hw_init(struct sam_uart *uart, const struct sam_uart_config *cfg)
 {
@@ -261,8 +305,10 @@ sam_uart_hw_init(struct sam_uart *uart, const struct sam_uart_config *cfg)
 	    (cfg->uart_hwflow ? UART_MCR_AFE : 0));
 
 	device_printf(uart->dev,
-	    "uart @ %#jx, baud %u (div %u of rclk %u = %u), %s, %s\n",
-	    (uintmax_t)cfg->uart_iobase, baud, divisor, rclk, actual,
+	    "uart @ %#jx, %u-bit regs (shift %u), baud %u "
+	    "(div %u of rclk %u = %u), %s, %s\n",
+	    (uintmax_t)cfg->uart_iobase, uart->w32 ? 32 : 8, uart->shift,
+	    baud, divisor, rclk, actual,
 	    cfg->uart_hwflow ? "hwflow" : "no hwflow",
 	    cfg->uart_have_irq ? "irq" : "polled");
 
@@ -273,46 +319,109 @@ struct sam_uart *
 sam_uart_attach(device_t dev, const struct sam_uart_config *cfg,
     const struct sam_uart_ops *ops, void *arg)
 {
+	static const struct {
+		bool	mem;
+		bool	w32;
+		uint8_t	shift;
+	} layouts[] = {
+		{ true, true, 2 },	/* LPSS/DesignWare MMIO */
+		{ true, false, 2 },	/* DesignWare MMIO, byte access */
+		{ true, false, 0 },	/* 16550 in memory space */
+		{ false, false, 0 },	/* plain 16550 I/O ports */
+		{ false, false, 1 },	/* I/O ports, 16-byte stride */
+	};
 	struct sam_uart *uart;
-	uint32_t nports;
+	uint32_t window, nports;
 	int error, flags;
+	u_int i;
+	bool found;
 
 	uart = malloc(sizeof(*uart), M_SURFACE_SAM, M_WAITOK | M_ZERO);
 	uart->dev = dev;
 	uart->ops = ops;
 	uart->arg = arg;
+	uart->mem = cfg->uart_mem;
 	callout_init(&uart->poll_ch, 1);
 
 	nports = cfg->uart_nports < 8 ? 8 : cfg->uart_nports;
 
-	/*
-	 * The I/O range may already be in the child's resource list (ACPI
-	 * parsed a plain IO resource); if it is not, add it ourselves so
-	 * that the bus can allocate it.
-	 */
-	uart->io_res = bus_alloc_resource(dev, SYS_RES_IOPORT, 0,
-	    cfg->uart_iobase, cfg->uart_iobase + nports - 1, nports,
-	    RF_ACTIVE);
-	if (uart->io_res == NULL) {
-		(void)bus_set_resource(dev, SYS_RES_IOPORT, 0,
-		    cfg->uart_iobase, nports);
+	if (cfg->uart_pcidev != NULL) {
+		/*
+		 * The window is a BAR on the UART's PCI function; take
+		 * it there so that address decoding is enabled and
+		 * nobody else can claim it.
+		 */
+		uart->res_dev = cfg->uart_pcidev;
+		uart->res_type = cfg->uart_mem ? SYS_RES_MEMORY :
+		    SYS_RES_IOPORT;
+		uart->res_rid = cfg->uart_rid;
+		uart->io_res = bus_alloc_resource(uart->res_dev,
+		    uart->res_type, uart->res_rid, 0, ~0ul, 0, RF_ACTIVE);
+		if (uart->io_res == NULL) {
+			device_printf(dev,
+			    "cannot allocate %s window on %s%s\n",
+			    uart->res_type == SYS_RES_MEMORY ?
+			    "memory" : "I/O",
+			    device_get_nameunit(uart->res_dev),
+			    device_get_driver(uart->res_dev) != NULL ?
+			    " (busy)" : "");
+			goto fail;
+		}
+	} else {
+		/*
+		 * The I/O range may already be in the child's resource
+		 * list (ACPI parsed a plain IO resource); if it is not,
+		 * add it ourselves so that the bus can allocate it.
+		 */
+		uart->res_dev = dev;
+		uart->res_type = SYS_RES_IOPORT;
+		uart->res_rid = 0;
 		uart->io_res = bus_alloc_resource(dev, SYS_RES_IOPORT, 0,
 		    cfg->uart_iobase, cfg->uart_iobase + nports - 1, nports,
 		    RF_ACTIVE);
-	}
-	if (uart->io_res == NULL) {
-		device_printf(dev, "cannot allocate I/O range %#jx\n",
-		    (uintmax_t)cfg->uart_iobase);
-		goto fail;
+		if (uart->io_res == NULL) {
+			(void)bus_set_resource(dev, SYS_RES_IOPORT, 0,
+			    cfg->uart_iobase, nports);
+			uart->io_res = bus_alloc_resource(dev,
+			    SYS_RES_IOPORT, 0, cfg->uart_iobase,
+			    cfg->uart_iobase + nports - 1, nports, RF_ACTIVE);
+		}
+		if (uart->io_res == NULL) {
+			device_printf(dev, "cannot allocate I/O range %#jx\n",
+			    (uintmax_t)cfg->uart_iobase);
+			goto fail;
+		}
 	}
 	uart->bst = rman_get_bustag(uart->io_res);
 	uart->bsh = rman_get_bushandle(uart->io_res);
+	window = (uint32_t)(rman_get_end(uart->io_res) -
+	    rman_get_start(uart->io_res) + 1);
 
-	/*
-	 * Register window of a 16550 is 8 bytes; a wider ACPI window
-	 * implies a stride (DLAB-style shifted register map).
-	 */
-	uart->shift = nports >= 16 ? 1 : 0;
+	/* Probe the register layout; fall back to the usual one. */
+	if (uart->mem) {
+		uart->w32 = true;
+		uart->shift = 2;
+	} else {
+		uart->w32 = false;
+		uart->shift = nports >= 16 ? 1 : 0;
+	}
+	found = false;
+	for (i = 0; i < nitems(layouts); i++) {
+		if (layouts[i].mem != uart->mem)
+			continue;
+		if (!sam_uart_probe_regs(uart, layouts[i].w32,
+		    layouts[i].shift, window))
+			continue;
+		uart->w32 = layouts[i].w32;
+		uart->shift = layouts[i].shift;
+		found = true;
+		break;
+	}
+	if (!found)
+		device_printf(dev,
+		    "register layout probe failed, assuming %u-bit "
+		    "registers, shift %u\n", uart->w32 ? 32 : 8,
+		    uart->shift);
 
 	error = sam_uart_hw_init(uart, cfg);
 	if (error != 0)
@@ -368,7 +477,8 @@ sam_uart_attach(device_t dev, const struct sam_uart_config *cfg,
 
 fail_io:
 	if (uart->io_res != NULL)
-		bus_release_resource(dev, SYS_RES_IOPORT, 0, uart->io_res);
+		bus_release_resource(uart->res_dev, uart->res_type,
+		    uart->res_rid, uart->io_res);
 fail:
 	free(uart, M_SURFACE_SAM);
 	return (NULL);
@@ -389,7 +499,7 @@ sam_uart_detach(struct sam_uart *uart)
 		bus_release_resource(uart->dev, SYS_RES_IRQ, 0,
 		    uart->irq_res);
 	if (uart->io_res != NULL)
-		bus_release_resource(uart->dev, SYS_RES_IOPORT, 0,
-		    uart->io_res);
+		bus_release_resource(uart->res_dev, uart->res_type,
+		    uart->res_rid, uart->io_res);
 	free(uart, M_SURFACE_SAM);
 }

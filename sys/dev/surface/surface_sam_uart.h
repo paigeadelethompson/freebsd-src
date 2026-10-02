@@ -48,6 +48,15 @@ struct sam_uart_config {
 	uint32_t	uart_rclk;	/* 0 -> 1843200 */
 	uint8_t		uart_lcr;	/* line control word */
 	bool		uart_hwflow;	/* RTS/CTS from ACPI */
+	/*
+	 * Register window behind a PCI function (Intel LPSS UART: the
+	 * serial bus descriptor names the controller, the window is a
+	 * BAR on it).  uart_pcidev is NULL for a plain I/O window from
+	 * _CRS.
+	 */
+	bool		uart_mem;	/* memory-space window, not I/O */
+	device_t	uart_pcidev;	/* PCI device holding the window */
+	int		uart_rid;	/* resource id on uart_pcidev */
 };
 
 struct sam_uart_ops {
